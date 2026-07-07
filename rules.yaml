@@ -1,0 +1,11 @@
+# detection-decay rule-to-probe mapping
+rules:
+  - rule: win_proc_create.yml
+    agent_id: "002"
+    event_type_field: data.win.system.eventID
+    event_id: 1
+    field_path: data.win.eventdata.image
+    rule_id: "92031"
+    window_minutes: 15
+    baseline_volume: 1
+    baseline_field_populate: 1.0

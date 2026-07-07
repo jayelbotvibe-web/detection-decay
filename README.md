@@ -17,18 +17,14 @@ A verdict is assigned per rule-state pair: HEALTHY, DEAD:SOURCE, DEAD:FIELD, or 
 
 ## Demonstrated failure modes
 
-Both on real Windows Sysmon EID 1 telemetry from a Wazuh SIEM lab:
+Both on real Windows Sysmon EID 1 telemetry from a Wazuh SIEM lab.
 
-**Source death** — Sysmon channel collection disabled in agent config. Agent stays Active. Volume collapses 64→0.
-
-![Source death](screenshots/decay-dashboard.png)
-
-**Field drift** — `data.win.eventdata.image` removed at the index via ingest pipeline. Volume stays at 234 events. Field populate collapses 100%→0%.
-
+![Dashboard](screenshots/decay-dashboard.png)
 ![CLI output](screenshots/decay-cli.png)
 
 ## Quickstart
 
+### Static evidence mode
 ```bash
 git clone https://github.com/jayelbotvibe-web/detection-decay.git
 cd detection-decay
@@ -36,14 +32,19 @@ go build ./cmd/decay
 ./decay score --evidence evidence.json
 ```
 
-HTML dashboard:
+### Live mode (v0.2.0)
+
+Queries the Wazuh indexer and manager API directly for real measurements:
+
 ```bash
-./decay score --evidence evidence.json --format html --out dashboard.html
+cp .env.example .env  # edit with your lab credentials
+export $(grep -v '^#' .env | xargs)
+./decay score --live --config rules.yaml
 ```
 
-## Scoring model
+Environment variables: `INDEXER_URL`, `INDEXER_USER`, `INDEXER_PASS`, `WAZUH_API_URL`, `WAZUH_API_USER`, `WAZUH_API_PASS`. See `.env.example`.
 
-The capability gate model measures "what fraction of the detection chain is intact":
+## Scoring model
 
 | Gate | Measurement | Fails when |
 |------|------------|------------|
@@ -53,10 +54,10 @@ The capability gate model measures "what fraction of the detection chain is inta
 
 ## Limitations
 
-- **Evidence-driven MVP**: reads static JSON measurements, not a live SIEM.
+- **Evidence-driven**: static mode reads JSON; live mode queries indexer but still needs baseline calibration.
 - **P(behavior) deferred**: alert freshness not yet modeled.
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
-- **No closed calibration loop**: the tool scores probes but does not run them.
+- **Hardcoded field map**: `rules.yaml` maps fields manually — real Sigma YAML parsing is future work.
 
 ## License
 

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,31 +10,40 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/jayelbotvibe-web/detection-decay/internal/probe"
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
 
-const version = "v0.1.0"
+const version = "v0.2.0"
 
 func main() {
-	evidencePath := flag.String("evidence", "evidence.json", "path to evidence JSON file")
+	evidencePath := flag.String("evidence", "evidence.json", "path to static evidence JSON file")
+	liveMode := flag.Bool("live", false, "run live probes against the SIEM indexer")
+	configPath := flag.String("config", "rules.yaml", "path to rules YAML config (live mode)")
 	format := flag.String("format", "text", "output format: text, html")
 	outPath := flag.String("out", "", "output file path (for html format)")
 	flag.Parse()
 
-	data, err := os.ReadFile(*evidencePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading evidence: %v\n", err)
-		os.Exit(1)
-	}
 	var evs []score.Evidence
-	if err := json.Unmarshal(data, &evs); err != nil {
-		fmt.Fprintf(os.Stderr, "error parsing evidence: %v\n", err)
-		os.Exit(1)
+
+	if *liveMode {
+		evs = runLive(*configPath)
+	} else {
+		data, err := os.ReadFile(*evidencePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading evidence: %v\n", err)
+			os.Exit(1)
+		}
+		if err := json.Unmarshal(data, &evs); err != nil {
+			fmt.Fprintf(os.Stderr, "error parsing evidence: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	results := score.ScoreAll(evs)
 
-	// Sort: worst decay first
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].DecayScore > results[j].DecayScore
 	})
@@ -52,14 +62,51 @@ func main() {
 	}
 }
 
+func runLive(configPath string) []score.Evidence {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading rules config: %v\n", err)
+		os.Exit(1)
+	}
+	var rulesFile struct {
+		Rules []probe.RuleConfig `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(data, &rulesFile); err != nil {
+		fmt.Fprintf(os.Stderr, "error parsing rules config: %v\n", err)
+		os.Exit(1)
+	}
+
+	ic := probe.NewIndexerClient()
+	ac := probe.NewAlertClient()
+	ctx := context.Background()
+
+	var evs []score.Evidence
+	for _, cfg := range rulesFile.Rules {
+		ev, err := probe.ProbeAll(ctx, ic, ac, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "probe error for %s: %v\n", cfg.Rule, err)
+			continue
+		}
+		// Convert probe.Evidence to score.Evidence
+		evs = append(evs, score.Evidence{
+			Rule:                 ev.Rule,
+			State:                ev.State,
+			Liveness:             ev.Liveness,
+			Volume:               ev.Volume,
+			BaselineVolume:       ev.BaselineVolume,
+			FieldPopulate:        ev.FieldPopulate,
+			BaselineFieldPopulate: ev.BaselineFieldPopulate,
+		})
+	}
+	return evs
+}
+
 func renderText(results []score.Result) string {
 	var sb strings.Builder
 
-	// Header
 	sb.WriteString(fmt.Sprintf("\033[1;36mdecay %s\033[0m — detection-decay scorer\n", version))
 	sb.WriteString("evidence: purple-loop Windows Sysmon baseline\n\n")
 
-	// Table
 	sb.WriteString("┌──────────────────────────────────────┬──────┬────────┬───────┬───────┬────────────────────┐\n")
 	sb.WriteString("│ RULE / STATE                         │ LIVE │ VOLUME │ FIELD │ DECAY │ VERDICT            │\n")
 	sb.WriteString("├──────────────────────────────────────┼──────┼────────┼───────┼───────┼────────────────────┤\n")
@@ -98,7 +145,6 @@ func renderText(results []score.Result) string {
 
 	sb.WriteString("└──────────────────────────────────────┴──────┴────────┴───────┴───────┴────────────────────┘\n\n")
 
-	// Reason codes
 	sb.WriteString("\033[1mReason codes\033[0m\n")
 	for _, r := range results {
 		if r.Verdict == score.VHealthy {
@@ -109,7 +155,6 @@ func renderText(results []score.Result) string {
 		sb.WriteString(fmt.Sprintf("  └ %s\n", r.Reason))
 	}
 
-	// Summary
 	healthy := 0
 	dead := 0
 	worst := 0.0
@@ -149,7 +194,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 .footer{margin-top:2rem;color:#8b949e;font-size:0.85rem}
 </style></head><body>`)
 
-	// Find worst
 	worst := results[0]
 	for _, r := range results {
 		if r.DecayScore > worst.DecayScore {
@@ -157,7 +201,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		}
 	}
 
-	// Hero
 	vcls := "healthy"
 	if worst.Verdict == "DEAD:SOURCE" {
 		vcls = "dead-source"
@@ -173,7 +216,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		func() float64 { if worst.FieldPopulate != nil { return *worst.FieldPopulate * 100 }; return 0 }(),
 		worst.Reason))
 
-	// Table
 	sb.WriteString("<table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr>")
 	for _, r := range results {
 		live := fmt.Sprintf(`<span class="healthy">%s</span>`, r.Liveness)
@@ -222,7 +264,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 }
 
 func padRight(s string, width int) string {
-	// Strip ANSI codes before measuring
 	clean := s
 	for {
 		start := strings.Index(clean, "\033[")
@@ -236,7 +277,7 @@ func padRight(s string, width int) string {
 		clean = clean[:start] + clean[start+end+1:]
 	}
 	if len(clean) >= width {
-		return s[:width+len(s)-len(clean)] // approximate
+		return s[:width+len(s)-len(clean)]
 	}
 	return s + strings.Repeat(" ", width-len(clean))
 }

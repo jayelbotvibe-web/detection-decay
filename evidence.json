@@ -1,0 +1,29 @@
+[
+  {
+    "rule": "win_proc_create.yml",
+    "state": "baseline",
+    "liveness": "active",
+    "volume": 64,
+    "baseline_volume": 64,
+    "field_populate": 1.0,
+    "baseline_field_populate": 1.0
+  },
+  {
+    "rule": "win_proc_create.yml",
+    "state": "source-death",
+    "liveness": "active",
+    "volume": 0,
+    "baseline_volume": 64,
+    "field_populate": null,
+    "baseline_field_populate": 1.0
+  },
+  {
+    "rule": "win_proc_create.yml",
+    "state": "field-drift",
+    "liveness": "active",
+    "volume": 234,
+    "baseline_volume": 64,
+    "field_populate": 0.0,
+    "baseline_field_populate": 1.0
+  }
+]

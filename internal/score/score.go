@@ -6,39 +6,49 @@ import "fmt"
 
 // Verdict labels.
 const (
-	VHealthy           = "HEALTHY"
-	VDeadSource        = "DEAD:SOURCE"
-	VDeadField         = "DEAD:FIELD"
-	VInsufficientData  = "INSUFFICIENT_DATA"
+	VHealthy          = "HEALTHY"
+	VDeadSource       = "DEAD:SOURCE"
+	VDeadField        = "DEAD:FIELD"
+	VInsufficientData = "INSUFFICIENT_DATA"
+	VProbeError       = "PROBE_ERROR"
 )
 
 // Evidence is one rule-state measurement row.
 type Evidence struct {
-	Rule                 string   `json:"rule"`
-	State                string   `json:"state"`
-	Liveness             string   `json:"liveness"`
-	Volume               int      `json:"volume"`
-	BaselineVolume       int      `json:"baseline_volume"`
-	FieldPopulate        *float64 `json:"field_populate"`
+	Rule                  string   `json:"rule"`
+	State                 string   `json:"state"`
+	Liveness              string   `json:"liveness"`
+	Volume                int      `json:"volume"`
+	BaselineVolume        int      `json:"baseline_volume"`
+	FieldPopulate         *float64 `json:"field_populate"`
 	BaselineFieldPopulate float64  `json:"baseline_field_populate"`
+	ProbeError            string   `json:"probe_error,omitempty"`
 }
 
 // Result is the scored output for one rule-state.
 type Result struct {
 	Evidence
-	PSource     float64 `json:"p_source"`
-	PField      float64 `json:"p_field"`
-	PBehavior   float64 `json:"p_behavior"`
-	FieldAbstain bool   `json:"field_abstain"`
-	Health      float64 `json:"health"`
-	DecayScore  float64 `json:"decay_score"`
-	Verdict     string  `json:"verdict"`
-	Reason      string  `json:"reason"`
+	PSource      float64 `json:"p_source"`
+	PField       float64 `json:"p_field"`
+	PBehavior    float64 `json:"p_behavior"`
+	FieldAbstain bool    `json:"field_abstain"`
+	Health       float64 `json:"health"`
+	DecayScore   float64 `json:"decay_score"`
+	Verdict      string  `json:"verdict"`
+	Reason       string  `json:"reason"`
 }
 
 // Score evaluates a single evidence row.
+// PROBE_ERROR is checked FIRST — a failed measurement is NEVER scored as DEAD.
 func Score(ev Evidence) Result {
 	r := Result{Evidence: ev, PBehavior: 1.0}
+
+	// PROBE_ERROR gate: a failed measurement is not a detection failure.
+	if ev.ProbeError != "" {
+		r.Verdict = VProbeError
+		r.Reason = ev.ProbeError
+		return r
+	}
 
 	// P_source
 	if ev.Liveness != "active" {
@@ -71,7 +81,7 @@ func Score(ev Evidence) Result {
 	// Health and DecayScore
 	pfield := r.PField
 	if r.FieldAbstain {
-		pfield = 1.0 // ABSTAIN: don't penalise for missing data
+		pfield = 1.0
 	}
 	r.Health = r.PSource * pfield * r.PBehavior
 	r.DecayScore = 1.0 - r.Health

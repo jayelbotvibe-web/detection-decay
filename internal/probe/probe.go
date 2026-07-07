@@ -16,13 +16,13 @@ import (
 
 // IndexerClient holds connection state for the Wazuh indexer.
 type IndexerClient struct {
-	URL      string
-	User     string
-	Pass     string
-	client   *http.Client
+	URL    string
+	User   string
+	Pass   string
+	client *http.Client
 }
 
-// AlertClient holds connection state for the Wazuh manager API (agent status only).
+// AlertClient holds connection state for the Wazuh manager API.
 type AlertClient struct {
 	APIURL string
 	User   string
@@ -40,6 +40,7 @@ type Evidence struct {
 	BaselineVolume       int      `json:"baseline_volume"`
 	FieldPopulate        *float64 `json:"field_populate"`
 	BaselineFieldPopulate float64  `json:"baseline_field_populate"`
+	ProbeError           string   `json:"probe_error,omitempty"`
 }
 
 // NewIndexerClient creates a client from environment variables.
@@ -131,11 +132,13 @@ func (c *AlertClient) apiGet(ctx context.Context, path string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// AgentStatus returns "active" or "disconnected" for a given agent ID.
+// AgentStatus returns the REAL agent status ONLY when the API call succeeds.
+// "disconnected" from a successful API call is real source death.
+// A failed API call returns an error — it is NOT "disconnected".
 func (c *AlertClient) AgentStatus(ctx context.Context, agentID string) (string, error) {
 	data, err := c.apiGet(ctx, "/agents?agents_list="+agentID+"&status=active")
 	if err != nil {
-		return "disconnected", nil
+		return "", fmt.Errorf("wazuh api unreachable: %w", err)
 	}
 	var resp struct {
 		Data struct {
@@ -143,7 +146,7 @@ func (c *AlertClient) AgentStatus(ctx context.Context, agentID string) (string, 
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return "disconnected", nil
+		return "", fmt.Errorf("wazuh api decode: %w", err)
 	}
 	if len(resp.Data.AffectedItems) > 0 {
 		return "active", nil
@@ -166,13 +169,13 @@ func (c *IndexerClient) EventVolume(agentID, eventTypeField string, eventID int,
 	}`, agentID, eventTypeField, eventID, windowMinutes)
 	body, err := c.do("POST", "/wazuh-archives-*/_count", query)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("indexer unreachable: %w", err)
 	}
 	var result struct {
 		Count int `json:"count"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("indexer decode: %w", err)
 	}
 	return result.Count, nil
 }
@@ -197,7 +200,7 @@ func (c *IndexerClient) FieldPopulate(agentID, eventTypeField string, eventID in
 	}`, agentID, eventTypeField, eventID, windowMinutes, eventTypeField, fieldPath)
 	body, err := c.do("POST", "/wazuh-archives-*/_search", query)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("indexer unreachable: %w", err)
 	}
 	var result struct {
 		Aggregations struct {
@@ -210,7 +213,7 @@ func (c *IndexerClient) FieldPopulate(agentID, eventTypeField string, eventID in
 		} `json:"aggregations"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("indexer decode: %w", err)
 	}
 	if result.Aggregations.Total.Value == 0 {
 		return 0, nil
@@ -219,46 +222,54 @@ func (c *IndexerClient) FieldPopulate(agentID, eventTypeField string, eventID in
 }
 
 // ProbeAll gathers live evidence for a rule config.
-func ProbeAll(ctx context.Context, ic *IndexerClient, ac *AlertClient, cfg RuleConfig) (Evidence, error) {
+// If ANY probe returns an error, ProbeError is set and no fabricated values are populated.
+func ProbeAll(ctx context.Context, ic *IndexerClient, ac *AlertClient, cfg RuleConfig) Evidence {
 	ev := Evidence{
-		Rule:           cfg.Rule,
-		State:          "live",
-		BaselineVolume: cfg.BaselineVolume,
+		Rule:                 cfg.Rule,
+		State:                "live",
+		BaselineVolume:       cfg.BaselineVolume,
 		BaselineFieldPopulate: cfg.BaselineFieldPopulate,
 	}
 
+	var errs []string
+
 	status, err := ac.AgentStatus(ctx, cfg.AgentID)
 	if err != nil {
-		status = "disconnected"
+		errs = append(errs, "liveness: "+err.Error())
+	} else {
+		ev.Liveness = status
 	}
-	ev.Liveness = status
 
 	vol, err := ic.EventVolume(cfg.AgentID, cfg.EventTypeField, cfg.EventID, cfg.WindowMinutes)
 	if err != nil {
-		vol = 0
+		errs = append(errs, "volume: "+err.Error())
+	} else {
+		ev.Volume = vol
 	}
-	ev.Volume = vol
 
 	fp, err := ic.FieldPopulate(cfg.AgentID, cfg.EventTypeField, cfg.EventID, cfg.FieldPath, cfg.WindowMinutes)
 	if err != nil {
-		ev.FieldPopulate = nil
+		errs = append(errs, "field: "+err.Error())
 	} else {
 		ev.FieldPopulate = &fp
 	}
 
-	return ev, nil
+	if len(errs) > 0 {
+		ev.ProbeError = strings.Join(errs, "; ")
+	}
+	return ev
 }
 
 // RuleConfig maps a detection rule to the SIEM fields needed to probe it.
 type RuleConfig struct {
-	Rule                 string `yaml:"rule"`
-	AgentID              string `yaml:"agent_id"`
-	EventTypeField       string `yaml:"event_type_field"`
-	EventID              int    `yaml:"event_id"`
-	FieldPath            string `yaml:"field_path"`
-	RuleID               string `yaml:"rule_id"`
-	WindowMinutes        int    `yaml:"window_minutes"`
-	BaselineVolume       int    `yaml:"baseline_volume"`
+	Rule                  string  `yaml:"rule"`
+	AgentID               string  `yaml:"agent_id"`
+	EventTypeField        string  `yaml:"event_type_field"`
+	EventID               int     `yaml:"event_id"`
+	FieldPath             string  `yaml:"field_path"`
+	RuleID                string  `yaml:"rule_id"`
+	WindowMinutes         int     `yaml:"window_minutes"`
+	BaselineVolume        int     `yaml:"baseline_volume"`
 	BaselineFieldPopulate float64 `yaml:"baseline_field_populate"`
 }
 

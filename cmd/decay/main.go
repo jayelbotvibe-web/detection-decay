@@ -82,20 +82,16 @@ func runLive(configPath string) []score.Evidence {
 
 	var evs []score.Evidence
 	for _, cfg := range rulesFile.Rules {
-		ev, err := probe.ProbeAll(ctx, ic, ac, cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "probe error for %s: %v\n", cfg.Rule, err)
-			continue
-		}
-		// Convert probe.Evidence to score.Evidence
+		ev := probe.ProbeAll(ctx, ic, ac, cfg)
 		evs = append(evs, score.Evidence{
-			Rule:                 ev.Rule,
-			State:                ev.State,
-			Liveness:             ev.Liveness,
-			Volume:               ev.Volume,
-			BaselineVolume:       ev.BaselineVolume,
-			FieldPopulate:        ev.FieldPopulate,
+			Rule:                  ev.Rule,
+			State:                 ev.State,
+			Liveness:              ev.Liveness,
+			Volume:                ev.Volume,
+			BaselineVolume:        ev.BaselineVolume,
+			FieldPopulate:         ev.FieldPopulate,
 			BaselineFieldPopulate: ev.BaselineFieldPopulate,
+			ProbeError:            ev.ProbeError,
 		})
 	}
 	return evs
@@ -114,6 +110,17 @@ func renderText(results []score.Result) string {
 	for _, r := range results {
 		name := fmt.Sprintf("%s / %s", r.Rule, r.State)
 		namePad := padRight(name, 36)
+
+		if r.Verdict == score.VProbeError {
+			live := colour("ERR    ", "amber")
+			vol := colour("ERR    ", "amber")
+			field := colour("ERR     ", "amber")
+			decay := colour("n/a   ", "amber")
+			verdict := colour(fmt.Sprintf("%-18s", r.Verdict), "amber")
+			sb.WriteString(fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │\n",
+				namePad, live, vol, field, decay, verdict))
+			continue
+		}
 
 		live := colour("active", "green")
 		if r.Liveness != "active" {
@@ -157,8 +164,13 @@ func renderText(results []score.Result) string {
 
 	healthy := 0
 	dead := 0
+	errors := 0
 	worst := 0.0
 	for _, r := range results {
+		if r.Verdict == score.VProbeError {
+			errors++
+			continue
+		}
 		if r.Verdict == score.VHealthy {
 			healthy++
 		} else if r.Verdict == score.VDeadSource || r.Verdict == score.VDeadField {
@@ -168,8 +180,14 @@ func renderText(results []score.Result) string {
 			worst = r.DecayScore
 		}
 	}
-	sb.WriteString(fmt.Sprintf("\n\033[1m%d evaluated · %d healthy · %d silently decayed · worst %.2f\033[0m\n",
-		len(results), healthy, dead, worst))
+	sb.WriteString(fmt.Sprintf("\n\033[1m%d evaluated · %d healthy · %d silently decayed", len(results)-errors, healthy, dead))
+	if errors > 0 {
+		sb.WriteString(fmt.Sprintf(" · %d unmeasurable", errors))
+	}
+	if worst > 0 {
+		sb.WriteString(fmt.Sprintf(" · worst %.2f", worst))
+	}
+	sb.WriteString("\033[0m\n")
 	sb.WriteString("\033[90mA volume-only monitor catches source-death by luck — but MISSES field-drift entirely.\033[0m\n")
 
 	return sb.String()
@@ -305,7 +323,7 @@ func verdictColor(v string) string {
 		return "red"
 	case "DEAD:FIELD":
 		return "yellow"
-	case "INSUFFICIENT_DATA":
+	case "PROBE_ERROR":
 		return "amber"
 	default:
 		return "gray"

@@ -56,13 +56,31 @@ func TestDeadSource(t *testing.T) {
 	}
 }
 
+func TestProbeError(t *testing.T) {
+	ev := Evidence{
+		Liveness:              "",
+		Volume:                0,
+		BaselineVolume:        64,
+		FieldPopulate:         nil,
+		BaselineFieldPopulate: 1.0,
+		ProbeError:            "indexer unreachable",
+	}
+	r := Score(ev)
+	if r.Verdict != VProbeError {
+		t.Errorf("expected PROBE_ERROR for failed measurement, got %s", r.Verdict)
+	}
+	if r.Verdict == VDeadSource {
+		t.Error("PROBE_ERROR must NOT be classified as DEAD:SOURCE")
+	}
+}
+
 func TestDeadField(t *testing.T) {
 	fp := 0.0
 	ev := Evidence{
-		Liveness:             "active",
-		Volume:               234,
-		BaselineVolume:       64,
-		FieldPopulate:        &fp,
+		Liveness:              "active",
+		Volume:                234,
+		BaselineVolume:        64,
+		FieldPopulate:         &fp,
 		BaselineFieldPopulate: 1.0,
 	}
 	r := Score(ev)

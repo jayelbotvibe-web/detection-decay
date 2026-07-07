@@ -43,9 +43,10 @@ type Result struct {
 func Score(ev Evidence) Result {
 	r := Result{Evidence: ev, PBehavior: 1.0}
 
-	// PROBE_ERROR gate: a failed measurement is not a detection failure.
+	// PROBE_ERROR gate: a failed measurement is never scored as DEAD.
 	if ev.ProbeError != "" {
 		r.Verdict = VProbeError
+		r.DecayScore = -1 // sentinel: n/a
 		r.Reason = ev.ProbeError
 		return r
 	}

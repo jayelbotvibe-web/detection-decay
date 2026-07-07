@@ -56,9 +56,9 @@ func TestDeadSource(t *testing.T) {
 	}
 }
 
-func TestProbeError(t *testing.T) {
+func TestProbeError_NotDeadSource(t *testing.T) {
 	ev := Evidence{
-		Liveness:              "",
+		Liveness:              "active",
 		Volume:                0,
 		BaselineVolume:        64,
 		FieldPopulate:         nil,
@@ -71,6 +71,24 @@ func TestProbeError(t *testing.T) {
 	}
 	if r.Verdict == VDeadSource {
 		t.Error("PROBE_ERROR must NOT be classified as DEAD:SOURCE")
+	}
+	if r.DecayScore != -1 {
+		t.Errorf("expected DecayScore -1 (n/a), got %.2f", r.DecayScore)
+	}
+}
+
+func TestDisconnectedIsDeadSource(t *testing.T) {
+	fp := 1.0
+	ev := Evidence{
+		Liveness:              "disconnected",
+		Volume:                0,
+		BaselineVolume:        64,
+		FieldPopulate:         &fp,
+		BaselineFieldPopulate: 1.0,
+	}
+	r := Score(ev)
+	if r.Verdict != VDeadSource {
+		t.Errorf("successful 'disconnected' must be DEAD:SOURCE, got %s", r.Verdict)
 	}
 }
 

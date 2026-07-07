@@ -222,41 +222,36 @@ func (c *IndexerClient) FieldPopulate(agentID, eventTypeField string, eventID in
 }
 
 // ProbeAll gathers live evidence for a rule config.
-// If ANY probe returns an error, ProbeError is set and no fabricated values are populated.
+// On ANY probe error, stops immediately and sets ProbeError — no fabricated values.
 func ProbeAll(ctx context.Context, ic *IndexerClient, ac *AlertClient, cfg RuleConfig) Evidence {
 	ev := Evidence{
-		Rule:                 cfg.Rule,
-		State:                "live",
-		BaselineVolume:       cfg.BaselineVolume,
+		Rule:                  cfg.Rule,
+		State:                 "live",
+		BaselineVolume:        cfg.BaselineVolume,
 		BaselineFieldPopulate: cfg.BaselineFieldPopulate,
 	}
 
-	var errs []string
-
 	status, err := ac.AgentStatus(ctx, cfg.AgentID)
 	if err != nil {
-		errs = append(errs, "liveness: "+err.Error())
-	} else {
-		ev.Liveness = status
+		ev.ProbeError = "liveness: " + err.Error()
+		return ev
 	}
+	ev.Liveness = status
 
 	vol, err := ic.EventVolume(cfg.AgentID, cfg.EventTypeField, cfg.EventID, cfg.WindowMinutes)
 	if err != nil {
-		errs = append(errs, "volume: "+err.Error())
-	} else {
-		ev.Volume = vol
+		ev.ProbeError = "volume: " + err.Error()
+		return ev
 	}
+	ev.Volume = vol
 
 	fp, err := ic.FieldPopulate(cfg.AgentID, cfg.EventTypeField, cfg.EventID, cfg.FieldPath, cfg.WindowMinutes)
 	if err != nil {
-		errs = append(errs, "field: "+err.Error())
-	} else {
-		ev.FieldPopulate = &fp
+		ev.ProbeError = "field: " + err.Error()
+		return ev
 	}
+	ev.FieldPopulate = &fp
 
-	if len(errs) > 0 {
-		ev.ProbeError = strings.Join(errs, "; ")
-	}
 	return ev
 }
 

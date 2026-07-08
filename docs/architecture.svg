@@ -1,79 +1,85 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 400" style="background:#0d1117;font-family:monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 400" style="font-family:monospace">
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+    <marker id="arrowL" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#475569"/>
     </marker>
-    <marker id="arrowFail" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#f85149"/>
+    <marker id="arrowFailL" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#cf222e"/>
+    </marker>
+    <marker id="arrowL2" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#bf8700"/>
     </marker>
   </defs>
 
+  <!-- Background -->
+  <rect width="720" height="400" rx="8" fill="#ffffff"/>
+
   <!-- Title -->
-  <text x="360" y="28" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="bold">detection-decay</text>
-  <text x="360" y="48" text-anchor="middle" fill="#8b949e" font-size="11">capability-gate model</text>
+  <text x="360" y="28" text-anchor="middle" fill="#0969da" font-size="14" font-weight="bold" font-family="monospace">detection-decay</text>
+  <text x="360" y="48" text-anchor="middle" fill="#656d76" font-size="11" font-family="monospace">capability-gate model</text>
 
   <!-- Telemetry source -->
-  <rect x="20" y="120" width="90" height="50" rx="4" fill="none" stroke="#30363d" stroke-width="1"/>
-  <text x="65" y="142" text-anchor="middle" fill="#c9d1d9" font-size="11">telemetry</text>
-  <text x="65" y="158" text-anchor="middle" fill="#8b949e" font-size="9">Sysmon / auditd</text>
+  <rect x="20" y="120" width="90" height="50" rx="4" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <text x="65" y="142" text-anchor="middle" fill="#1f2328" font-size="11" font-family="monospace">telemetry</text>
+  <text x="65" y="158" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">Sysmon / auditd</text>
 
   <!-- Arrow source to gate 1 -->
-  <line x1="110" y1="145" x2="155" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="110" y1="145" x2="155" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowL)"/>
 
   <!-- Gate 1: P(source) -->
-  <rect x="160" y="70" width="140" height="150" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-  <text x="230" y="95" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">Gate 1: P(source)</text>
-  <line x1="175" y1="103" x2="285" y2="103" stroke="#21262d" stroke-width="1"/>
-  <text x="230" y="120" text-anchor="middle" fill="#8b949e" font-size="9">agent liveness</text>
-  <text x="230" y="135" text-anchor="middle" fill="#8b949e" font-size="9">volume >= 10% baseline</text>
-  <line x1="175" y1="145" x2="285" y2="145" stroke="#21262d" stroke-width="1"/>
-  <text x="230" y="162" text-anchor="middle" fill="#3fb950" font-size="10">pass: P(source) = 1.0</text>
-  <text x="230" y="182" text-anchor="middle" fill="#f85149" font-size="10">fail: DEAD:SOURCE</text>
-  <text x="230" y="200" text-anchor="middle" fill="#8b949e" font-size="8">agent disconnected or</text>
-  <text x="230" y="214" text-anchor="middle" fill="#8b949e" font-size="8">volume collapsed silently</text>
+  <rect x="160" y="70" width="140" height="150" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <text x="230" y="95" text-anchor="middle" fill="#0969da" font-size="12" font-weight="bold" font-family="monospace">Gate 1: P(source)</text>
+  <line x1="175" y1="103" x2="285" y2="103" stroke="#d0d7de" stroke-width="1"/>
+  <text x="230" y="120" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">agent liveness</text>
+  <text x="230" y="135" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">volume >= 10% baseline</text>
+  <line x1="175" y1="145" x2="285" y2="145" stroke="#d0d7de" stroke-width="1"/>
+  <text x="230" y="162" text-anchor="middle" fill="#1a7f37" font-size="10" font-family="monospace">pass: P(source) = 1.0</text>
+  <text x="230" y="182" text-anchor="middle" fill="#cf222e" font-size="10" font-family="monospace">fail: DEAD:SOURCE</text>
+  <text x="230" y="200" text-anchor="middle" fill="#656d76" font-size="8" font-family="monospace">agent disconnected or</text>
+  <text x="230" y="214" text-anchor="middle" fill="#656d76" font-size="8" font-family="monospace">volume collapsed silently</text>
 
   <!-- Gate 1 fail arrow down -->
-  <line x1="230" y1="220" x2="230" y2="250" stroke="#f85149" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowFail)"/>
-  <text x="238" y="238" fill="#f85149" font-size="8">DEAD:SOURCE</text>
+  <line x1="230" y1="220" x2="230" y2="250" stroke="#cf222e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowFailL)"/>
+  <text x="238" y="238" fill="#cf222e" font-size="8" font-family="monospace">DEAD:SOURCE</text>
 
   <!-- Arrow gate 1 to gate 2 -->
-  <line x1="300" y1="145" x2="345" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="300" y1="145" x2="345" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowL)"/>
 
   <!-- Gate 2: P(field) -->
-  <rect x="350" y="70" width="140" height="150" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-  <text x="420" y="95" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">Gate 2: P(field)</text>
-  <line x1="365" y1="103" x2="475" y2="103" stroke="#21262d" stroke-width="1"/>
-  <text x="420" y="120" text-anchor="middle" fill="#8b949e" font-size="9">field populate rate</text>
-  <text x="420" y="135" text-anchor="middle" fill="#8b949e" font-size="9">vs baseline rate</text>
-  <line x1="365" y1="145" x2="475" y2="145" stroke="#21262d" stroke-width="1"/>
-  <text x="420" y="162" text-anchor="middle" fill="#3fb950" font-size="10">pass: P(field) > 0</text>
-  <text x="420" y="182" text-anchor="middle" fill="#f0883e" font-size="10">fail: DEAD:FIELD</text>
-  <text x="420" y="200" text-anchor="middle" fill="#8b949e" font-size="8">field dropped at index</text>
-  <text x="420" y="214" text-anchor="middle" fill="#8b949e" font-size="8">while volume nominal</text>
+  <rect x="350" y="70" width="140" height="150" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <text x="420" y="95" text-anchor="middle" fill="#0969da" font-size="12" font-weight="bold" font-family="monospace">Gate 2: P(field)</text>
+  <line x1="365" y1="103" x2="475" y2="103" stroke="#d0d7de" stroke-width="1"/>
+  <text x="420" y="120" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">field populate rate</text>
+  <text x="420" y="135" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">vs baseline rate</text>
+  <line x1="365" y1="145" x2="475" y2="145" stroke="#d0d7de" stroke-width="1"/>
+  <text x="420" y="162" text-anchor="middle" fill="#1a7f37" font-size="10" font-family="monospace">pass: P(field) > 0</text>
+  <text x="420" y="182" text-anchor="middle" fill="#bf8700" font-size="10" font-family="monospace">fail: DEAD:FIELD</text>
+  <text x="420" y="200" text-anchor="middle" fill="#656d76" font-size="8" font-family="monospace">field dropped at index</text>
+  <text x="420" y="214" text-anchor="middle" fill="#656d76" font-size="8" font-family="monospace">while volume nominal</text>
 
   <!-- Gate 2 fail arrow down -->
-  <line x1="420" y1="220" x2="420" y2="250" stroke="#f0883e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow)"/>
-  <text x="428" y="238" fill="#f0883e" font-size="8">DEAD:FIELD</text>
+  <line x1="420" y1="220" x2="420" y2="250" stroke="#bf8700" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowL2)"/>
+  <text x="428" y="238" fill="#bf8700" font-size="8" font-family="monospace">DEAD:FIELD</text>
 
   <!-- Arrow gate 2 to gate 3 -->
-  <line x1="490" y1="145" x2="535" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="490" y1="145" x2="535" y2="145" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowL)"/>
 
   <!-- Gate 3: P(behavior) -->
-  <rect x="540" y="70" width="140" height="150" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1" opacity="0.6"/>
-  <text x="610" y="95" text-anchor="middle" fill="#475569" font-size="12" font-weight="bold">Gate 3: P(behavior)</text>
-  <line x1="555" y1="103" x2="665" y2="103" stroke="#21262d" stroke-width="1"/>
-  <text x="610" y="120" text-anchor="middle" fill="#475569" font-size="9">rule match freshness</text>
-  <text x="610" y="135" text-anchor="middle" fill="#475569" font-size="9">(deferred in MVP)</text>
-  <line x1="555" y1="145" x2="665" y2="145" stroke="#21262d" stroke-width="1"/>
-  <text x="610" y="162" text-anchor="middle" fill="#475569" font-size="10">P(behavior) = 1.0</text>
+  <rect x="540" y="70" width="140" height="150" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1" opacity="0.5"/>
+  <text x="610" y="95" text-anchor="middle" fill="#656d76" font-size="12" font-weight="bold" font-family="monospace">Gate 3: P(behavior)</text>
+  <line x1="555" y1="103" x2="665" y2="103" stroke="#d0d7de" stroke-width="1"/>
+  <text x="610" y="120" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">rule match freshness</text>
+  <text x="610" y="135" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">(deferred in MVP)</text>
+  <line x1="555" y1="145" x2="665" y2="145" stroke="#d0d7de" stroke-width="1"/>
+  <text x="610" y="162" text-anchor="middle" fill="#656d76" font-size="10" font-family="monospace">P(behavior) = 1.0</text>
 
   <!-- Formula -->
-  <rect x="100" y="290" width="520" height="40" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-  <text x="360" y="308" text-anchor="middle" fill="#c9d1d9" font-size="12">DecayScore = 1 - P(source) x P(field|source) x P(behavior)</text>
-  <text x="360" y="322" text-anchor="middle" fill="#8b949e" font-size="9">independent gates in series: any single failure kills detection</text>
+  <rect x="100" y="290" width="520" height="40" rx="4" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <text x="360" y="308" text-anchor="middle" fill="#1f2328" font-size="12" font-family="monospace">DecayScore = 1 - P(source) x P(field|source) x P(behavior)</text>
+  <text x="360" y="322" text-anchor="middle" fill="#656d76" font-size="9" font-family="monospace">independent gates in series: any single failure kills detection</text>
 
   <!-- Output: HEALTHY -->
-  <rect x="250" y="355" width="220" height="30" rx="4" fill="#0d2b1a" stroke="#3fb950" stroke-width="1"/>
-  <text x="360" y="375" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">all gates pass: HEALTHY</text>
+  <rect x="250" y="355" width="220" height="30" rx="4" fill="#dafbe1" stroke="#1a7f37" stroke-width="1"/>
+  <text x="360" y="375" text-anchor="middle" fill="#1a7f37" font-size="11" font-weight="bold" font-family="monospace">all gates pass: HEALTHY</text>
 
 </svg>

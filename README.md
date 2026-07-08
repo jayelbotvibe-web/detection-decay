@@ -1,17 +1,39 @@
 # detection-decay
 
+> Silent detection failure monitoring for SIEM detection engineers — catches source-death and field-drift that volume-only monitors miss.
+
+[![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![CI](https://github.com/jayelbotvibe-web/detection-decay/actions/workflows/go.yml/badge.svg)](https://github.com/jayelbotvibe-web/detection-decay/actions/workflows/go.yml)
+
 **The silent-detection-failure problem.** Your SIEM agent shows Active. Event volume looks healthy. But two things can silently kill detection without any conventional monitor catching them:
 
 1. **Source death** — the telemetry source stops sending events (log-collection config disabled, channel dropped) while the agent stays connected.
 2. **Field drift** — a critical field goes null at the index (schema change, pipeline bug, decoder upgrade) while events keep flowing.
 
-A volume-only monitor catches source death by luck but completely misses field drift. **detection-decay** solves this with a capability-gate model that decomposes detection integrity into three independent links.
+**detection-decay** solves this with a capability-gate model that decomposes detection integrity into three independent links:
 
 ```text
 DecayScore = 1 - P(source_ok) * P(field_ok|source_ok) * P(behavior)
 ```
 
 ![Architecture](docs/architecture.svg)
+
+> **Unlike volume-based monitors** (elastalert, Grafana alerts, Wazuh agent status checks) that only catch source death by accident, detection-decay explicitly models field-level integrity. If your Sigma rule depends on `Image` being populated and your ingest pipeline silently drops that field — no volume alert fires, but detection-decay catches it.
+
+## Who this is for
+
+**Detection engineers and purple teamers** running SIEM detection pipelines (Wazuh, Elastic, Splunk) who need to know when their detections silently break — not just when the agent disconnects.
+
+## What it is (and isn't)
+
+| This IS | This is NOT |
+|---------|-------------|
+| A capability-gate scoring model for detection health | A SIEM replacement or log aggregator |
+| An evidence-driven decay scorer with CLI + HTML output | A real-time monitoring service (yet — see roadmap) |
+| SIEM/source-agnostic (model works on any indexed telemetry) | A Sigma rule validator or detection-as-code tool |
+
+## Scoring model
 
 Each gate is checked independently against a healthy baseline:
 
@@ -22,8 +44,6 @@ Each gate is checked independently against a healthy baseline:
 | **P(behavior)** | Rule match freshness | Deferred in MVP (= 1.0) |
 
 A verdict is assigned per rule-state pair: `HEALTHY`, `DEAD:SOURCE`, `DEAD:FIELD`, or `INSUFFICIENT_DATA`.
-
-Unlike volume-based monitors (elastalert, Grafana alerts, Wazuh agent status checks) that only catch source death by accident, detection-decay explicitly models field-level integrity. If your Sigma rule depends on `Image` being populated and your ingest pipeline silently drops that field, no volume alert fires — but detection-decay catches it.
 
 ## Demonstrated failure modes
 
@@ -97,6 +117,12 @@ The evidence format is a JSON array of measurement rows:
 - **P(behavior) deferred**: alert freshness not yet modeled.
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
 - **No closed calibration loop**: the tool scores probes but does not run them.
+
+## Author
+
+Built by [Juniel Katarn](https://linkedin.com/in/junielkatarn) (~7yr IR/VM/SIEM ops). [ZeroDay Brief](https://zerodaybrief.blog) podcast. Questions? [Open an issue](https://github.com/jayelbotvibe-web/detection-decay/issues) or DM [@junielkatarn](https://x.com/junielkatarn).
+
+⭐ **Star this repo** if you've hit silent detection decay in production. [Issues](https://github.com/jayelbotvibe-web/detection-decay/issues) and PRs welcome.
 
 ## License
 

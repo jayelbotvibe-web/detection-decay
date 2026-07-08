@@ -118,10 +118,6 @@ The evidence format is a JSON array of measurement rows:
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
 - **No closed calibration loop**: the tool scores probes but does not run them.
 
-## Author
-
-Built by [Juniel Katarn](https://linkedin.com/in/junielkatarn) (~7yr IR/VM/SIEM ops). [ZeroDay Brief](https://zerodaybrief.blog) podcast. Questions? [Open an issue](https://github.com/jayelbotvibe-web/detection-decay/issues) or DM [@junielkatarn](https://x.com/junielkatarn).
-
 ⭐ **Star this repo** if you've hit silent detection decay in production. [Issues](https://github.com/jayelbotvibe-web/detection-decay/issues) and PRs welcome.
 
 ## License

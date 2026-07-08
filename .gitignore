@@ -1,0 +1,19 @@
+# Go build artifacts
+/decay
+/decay.exe
+*.test
+*.out
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Example output (regenerate with: ./decay score --evidence evidence.json --format html --out demo/dashboard.html)
+/dashboard.html

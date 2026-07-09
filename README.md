@@ -75,10 +75,11 @@ go install github.com/jayelbotvibe-web/detection-decay/cmd/decay@latest
 
 ## Usage
 
-Score a static evidence file:
+Score a static evidence file (both forms work):
 
 ```bash
 ./decay score --evidence evidence.json
+./decay --evidence evidence.json        # bare-flags form also works
 ```
 
 Generate an HTML dashboard:
@@ -132,7 +133,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 
 ## Roadmap
 
-- [ ] **Live mode** (`--live`) — poll SIEM APIs (Wazuh, Elasticsearch, Splunk) directly instead of reading static JSON
+- [x] **Live mode** (`--live`) — poll Wazuh APIs directly (shipped on `feat/live-mode` branch; pending merge)
 - [ ] **P(behavior) gate** — rule match freshness scoring (time since last alert match)
 - [ ] **Multi-rule scope** — calibrate across full Sigma rule sets, not just `win_proc_create.yml`
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected

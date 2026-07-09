@@ -12,15 +12,39 @@ import (
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
 
-const version = "v0.1.0"
+const version = "v0.1.1"
 
 func main() {
-	evidencePath := flag.String("evidence", "evidence.json", "path to evidence JSON file")
-	format := flag.String("format", "text", "output format: text, html")
-	outPath := flag.String("out", "", "output file path (for html format)")
-	flag.Parse()
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: decay [score] [flags]\n")
+		os.Exit(2)
+	}
 
-	data, err := os.ReadFile(*evidencePath)
+	var evidencePath, format, outPath string
+
+	// scoreCmd holds the flags for the 'score' subcommand
+	scoreCmd := flag.NewFlagSet("score", flag.ExitOnError)
+	scoreCmd.StringVar(&evidencePath, "evidence", "evidence.json", "path to evidence JSON file")
+	scoreCmd.StringVar(&format, "format", "text", "output format: text, html")
+	scoreCmd.StringVar(&outPath, "out", "", "output file path (for html format)")
+
+	// Also support bare-flags form (no 'score' keyword)
+	bareCmd := flag.NewFlagSet("decay", flag.ExitOnError)
+	bareCmd.StringVar(&evidencePath, "evidence", "evidence.json", "path to evidence JSON file")
+	bareCmd.StringVar(&format, "format", "text", "output format: text, html")
+	bareCmd.StringVar(&outPath, "out", "", "output file path (for html format)")
+
+	if os.Args[1] == "score" {
+		scoreCmd.Parse(os.Args[2:])
+	} else if strings.HasPrefix(os.Args[1], "-") {
+		bareCmd.Parse(os.Args[1:])
+	} else {
+		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "usage: decay [score] [flags]\n")
+		os.Exit(2)
+	}
+
+	data, err := os.ReadFile(evidencePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading evidence: %v\n", err)
 		os.Exit(1)
@@ -33,33 +57,35 @@ func main() {
 
 	results := score.ScoreAll(evs)
 
-	// Sort: worst decay first
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].DecayScore > results[j].DecayScore
 	})
 
-	switch *format {
+	switch format {
 	case "html":
-		html := renderHTML(results)
-		if *outPath != "" {
-			os.WriteFile(*outPath, []byte(html), 0644)
-			fmt.Printf("dashboard written to %s\n", *outPath)
+		html := renderHTML(results, evidencePath)
+		if outPath != "" {
+			os.WriteFile(outPath, []byte(html), 0644)
+			fmt.Printf("dashboard written to %s\n", outPath)
 		} else {
 			fmt.Print(html)
 		}
 	default:
-		fmt.Print(renderText(results))
+		fmt.Print(renderText(results, evidencePath))
 	}
 }
 
-func renderText(results []score.Result) string {
+func renderText(results []score.Result, evidencePath string) string {
 	var sb strings.Builder
 
-	// Header
 	sb.WriteString(fmt.Sprintf("\033[1;36mdecay %s\033[0m — detection-decay scorer\n", version))
-	sb.WriteString("evidence: purple-loop Windows Sysmon baseline\n\n")
+	sb.WriteString(fmt.Sprintf("evidence: %s\n\n", evidencePath))
 
-	// Table
+	if len(results) == 0 {
+		sb.WriteString("no evidence rows — nothing to score\n")
+		return sb.String()
+	}
+
 	sb.WriteString("┌──────────────────────────────────────┬──────┬────────┬───────┬───────┬────────────────────┐\n")
 	sb.WriteString("│ RULE / STATE                         │ LIVE │ VOLUME │ FIELD │ DECAY │ VERDICT            │\n")
 	sb.WriteString("├──────────────────────────────────────┼──────┼────────┼───────┼───────┼────────────────────┤\n")
@@ -69,7 +95,7 @@ func renderText(results []score.Result) string {
 		namePad := padRight(name, 36)
 
 		live := colour("active", "green")
-		if r.Liveness != "active" {
+		if !strings.EqualFold(r.Liveness, "active") {
 			live = colour(r.Liveness, "red")
 		}
 
@@ -98,7 +124,6 @@ func renderText(results []score.Result) string {
 
 	sb.WriteString("└──────────────────────────────────────┴──────┴────────┴───────┴───────┴────────────────────┘\n\n")
 
-	// Reason codes
 	sb.WriteString("\033[1mReason codes\033[0m\n")
 	for _, r := range results {
 		if r.Verdict == score.VHealthy {
@@ -109,7 +134,6 @@ func renderText(results []score.Result) string {
 		sb.WriteString(fmt.Sprintf("  └ %s\n", r.Reason))
 	}
 
-	// Summary
 	healthy := 0
 	dead := 0
 	worst := 0.0
@@ -130,7 +154,7 @@ func renderText(results []score.Result) string {
 	return sb.String()
 }
 
-func renderHTML(results []score.Result) string {
+func renderHTML(results []score.Result, evidencePath string) string {
 	var sb strings.Builder
 	sb.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>decay dashboard</title>
 <style>
@@ -149,7 +173,15 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 .footer{margin-top:2rem;color:#8b949e;font-size:0.85rem}
 </style></head><body>`)
 
-	// Find worst
+	if len(results) == 0 {
+		sb.WriteString(fmt.Sprintf(`<div class="hero">
+<h1>decay %s — detection-decay dashboard</h1>
+<p>evidence: %s</p>
+<div class="worst gray">no evidence rows — nothing to score</div>
+</div></body></html>`, version, evidencePath))
+		return sb.String()
+	}
+
 	worst := results[0]
 	for _, r := range results {
 		if r.DecayScore > worst.DecayScore {
@@ -157,7 +189,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		}
 	}
 
-	// Hero
 	vcls := "healthy"
 	if worst.Verdict == "DEAD:SOURCE" {
 		vcls = "dead-source"
@@ -166,18 +197,22 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 	}
 	sb.WriteString(fmt.Sprintf(`<div class="hero">
 <h1>decay %s — detection-decay dashboard</h1>
-<p>evidence: purple-loop Windows Sysmon baseline</p>
+<p>evidence: %s</p>
 <div class="worst %s">%s</div>
 <p>liveness %s · volume %d · field %.0f%% — %s</p>
-</div>`, version, vcls, worst.Verdict, worst.Liveness, worst.Volume,
-		func() float64 { if worst.FieldPopulate != nil { return *worst.FieldPopulate * 100 }; return 0 }(),
+</div>`, version, evidencePath, vcls, worst.Verdict, worst.Liveness, worst.Volume,
+		func() float64 {
+			if worst.FieldPopulate != nil {
+				return *worst.FieldPopulate * 100
+			}
+			return 0
+		}(),
 		worst.Reason))
 
-	// Table
 	sb.WriteString("<table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr>")
 	for _, r := range results {
 		live := fmt.Sprintf(`<span class="healthy">%s</span>`, r.Liveness)
-		if r.Liveness != "active" {
+		if !strings.EqualFold(r.Liveness, "active") {
 			live = fmt.Sprintf(`<span class="dead-source">%s</span>`, r.Liveness)
 		}
 		vol := fmt.Sprintf(`<span class="healthy">%d</span>`, r.Volume)
@@ -222,7 +257,6 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 }
 
 func padRight(s string, width int) string {
-	// Strip ANSI codes before measuring
 	clean := s
 	for {
 		start := strings.Index(clean, "\033[")
@@ -236,7 +270,7 @@ func padRight(s string, width int) string {
 		clean = clean[:start] + clean[start+end+1:]
 	}
 	if len(clean) >= width {
-		return s[:width+len(s)-len(clean)] // approximate
+		return s[:width+len(s)-len(clean)]
 	}
 	return s + strings.Repeat(" ", width-len(clean))
 }

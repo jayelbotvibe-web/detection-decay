@@ -2,38 +2,41 @@
 // DecayScore = 1 - P(source_ok)·P(field_ok|source_ok)·P(behavior)
 package score
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Verdict labels.
 const (
-	VHealthy           = "HEALTHY"
-	VDeadSource        = "DEAD:SOURCE"
-	VDeadField         = "DEAD:FIELD"
-	VInsufficientData  = "INSUFFICIENT_DATA"
+	VHealthy          = "HEALTHY"
+	VDeadSource       = "DEAD:SOURCE"
+	VDeadField        = "DEAD:FIELD"
+	VInsufficientData = "INSUFFICIENT_DATA"
 )
 
 // Evidence is one rule-state measurement row.
 type Evidence struct {
-	Rule                 string   `json:"rule"`
-	State                string   `json:"state"`
-	Liveness             string   `json:"liveness"`
-	Volume               int      `json:"volume"`
-	BaselineVolume       int      `json:"baseline_volume"`
-	FieldPopulate        *float64 `json:"field_populate"`
+	Rule                  string   `json:"rule"`
+	State                 string   `json:"state"`
+	Liveness              string   `json:"liveness"`
+	Volume                int      `json:"volume"`
+	BaselineVolume        int      `json:"baseline_volume"`
+	FieldPopulate         *float64 `json:"field_populate"`
 	BaselineFieldPopulate float64  `json:"baseline_field_populate"`
 }
 
 // Result is the scored output for one rule-state.
 type Result struct {
 	Evidence
-	PSource     float64 `json:"p_source"`
-	PField      float64 `json:"p_field"`
-	PBehavior   float64 `json:"p_behavior"`
-	FieldAbstain bool   `json:"field_abstain"`
-	Health      float64 `json:"health"`
-	DecayScore  float64 `json:"decay_score"`
-	Verdict     string  `json:"verdict"`
-	Reason      string  `json:"reason"`
+	PSource      float64 `json:"p_source"`
+	PField       float64 `json:"p_field"`
+	PBehavior    float64 `json:"p_behavior"`
+	FieldAbstain bool    `json:"field_abstain"`
+	Health       float64 `json:"health"`
+	DecayScore   float64 `json:"decay_score"`
+	Verdict      string  `json:"verdict"`
+	Reason       string  `json:"reason"`
 }
 
 // Score evaluates a single evidence row.
@@ -41,7 +44,7 @@ func Score(ev Evidence) Result {
 	r := Result{Evidence: ev, PBehavior: 1.0}
 
 	// P_source
-	if ev.Liveness != "active" {
+	if !strings.EqualFold(ev.Liveness, "active") {
 		r.PSource = 0
 	} else if ev.Volume == 0 || (ev.BaselineVolume > 0 && float64(ev.Volume) < 0.1*float64(ev.BaselineVolume)) {
 		r.PSource = 0
@@ -78,7 +81,7 @@ func Score(ev Evidence) Result {
 
 	// Verdict + reason
 	switch {
-	case ev.Liveness != "active":
+	case !strings.EqualFold(ev.Liveness, "active"):
 		r.Verdict = VDeadSource
 		r.Reason = "agent disconnected"
 	case r.PSource == 0:

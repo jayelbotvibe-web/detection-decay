@@ -70,7 +70,7 @@ go build ./cmd/decay
 Or install directly:
 
 ```bash
-go install github.com/jayelbotvibe-web/detection-decay/cmd/decay@v0.1.0
+go install github.com/jayelbotvibe-web/detection-decay/cmd/decay@latest
 ```
 
 ## Usage
@@ -103,6 +103,33 @@ The evidence format is a JSON array of measurement rows:
 ]
 ```
 
+### Generating evidence from a live index
+
+`scripts/collect-opensearch.sh` measures volume and field-populate rate directly from a Wazuh indexer / OpenSearch / Elasticsearch endpoint and writes scorer-ready evidence. Credentials come from environment variables — never hardcode them:
+
+```bash
+export DECAY_ES_URL="https://127.0.0.1:9200"
+export DECAY_ES_USER="admin"
+export DECAY_ES_PASS="<indexer password>"
+
+# capture a healthy baseline once
+echo '{"baseline_volume": 64, "baseline_field_populate": 1.0}' > baseline.json
+
+# collect and score
+./scripts/collect-opensearch.sh \
+  --index 'wazuh-alerts-*' \
+  --rule win_proc_create.yml \
+  --field data.win.eventdata.image \
+  --filter 'data.win.system.eventID:1' \
+  --window 15m \
+  --baseline baseline.json \
+  --out evidence-live.json
+
+./decay score --evidence evidence-live.json
+```
+
+Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-signed lab certificates. If zero events are returned, `field_populate` is emitted as `null` so the scorer abstains instead of guessing.
+
 ## Roadmap
 
 - [ ] **Live mode** (`--live`) — poll SIEM APIs (Wazuh, Elasticsearch, Splunk) directly instead of reading static JSON
@@ -113,7 +140,7 @@ The evidence format is a JSON array of measurement rows:
 
 ## Limitations
 
-- **Evidence-driven MVP**: reads static JSON measurements, not a live SIEM.
+- **Evidence-driven MVP**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
 - **P(behavior) deferred**: alert freshness not yet modeled.
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
 - **No closed calibration loop**: the tool scores probes but does not run them.

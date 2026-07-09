@@ -8,29 +8,44 @@ import (
 )
 
 func TestRenderHTMLEmpty(t *testing.T) {
-	html := renderHTML(nil, "test.json")
-	if !strings.Contains(html, "no evidence rows") {
-		t.Errorf("expected 'no evidence rows' in empty HTML render, got: %s", html[:200])
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("renderHTML panicked on empty results: %v", rec)
+		}
+	}()
+	out := renderHTML("test.json", []score.Result{})
+	if !strings.Contains(out, "no evidence rows") {
+		t.Errorf("expected empty-state message in HTML output")
+	}
+	if !strings.Contains(out, "test.json") {
+		t.Errorf("expected evidence path in HTML output")
 	}
 }
 
 func TestRenderTextEmpty(t *testing.T) {
-	txt := renderText(nil, "test.json")
-	if !strings.Contains(txt, "no evidence rows") {
-		t.Errorf("expected 'no evidence rows' in empty text render, got: %s", txt[:200])
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("renderText panicked on empty results: %v", rec)
+		}
+	}()
+	out := renderText("test.json", []score.Result{})
+	if !strings.Contains(out, "no evidence rows") {
+		t.Errorf("expected empty-state message in text output")
 	}
 }
 
-func TestRenderHTMLEmptyNilSlice(t *testing.T) {
-	html := renderHTML([]score.Result{}, "test.json")
-	if !strings.Contains(html, "no evidence rows") {
-		t.Errorf("expected 'no evidence rows' for empty slice, got: %s", html[:200])
+func TestRenderHTMLReportsEvidencePath(t *testing.T) {
+	fp := 1.0
+	res := score.ScoreAll([]score.Evidence{{
+		Rule: "r.yml", State: "baseline", Liveness: "active",
+		Volume: 10, BaselineVolume: 10,
+		FieldPopulate: &fp, BaselineFieldPopulate: 1.0,
+	}})
+	out := renderHTML("lab-evidence.json", res)
+	if !strings.Contains(out, "lab-evidence.json") {
+		t.Errorf("expected evidence path in hero, hardcoded label regression?")
 	}
-}
-
-func TestRenderTextEmptyNilSlice(t *testing.T) {
-	txt := renderText([]score.Result{}, "test.json")
-	if !strings.Contains(txt, "no evidence rows") {
-		t.Errorf("expected 'no evidence rows' for empty slice, got: %s", txt[:200])
+	if strings.Contains(out, "purple-loop Windows Sysmon baseline") {
+		t.Errorf("hardcoded lab label still present")
 	}
 }

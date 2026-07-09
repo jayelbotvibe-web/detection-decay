@@ -15,36 +15,32 @@ import (
 const version = "v0.1.1"
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: decay [score] [flags]\n")
-		os.Exit(2)
-	}
-
-	var evidencePath, format, outPath string
-
-	// scoreCmd holds the flags for the 'score' subcommand
 	scoreCmd := flag.NewFlagSet("score", flag.ExitOnError)
-	scoreCmd.StringVar(&evidencePath, "evidence", "evidence.json", "path to evidence JSON file")
-	scoreCmd.StringVar(&format, "format", "text", "output format: text, html")
-	scoreCmd.StringVar(&outPath, "out", "", "output file path (for html format)")
+	evidencePath := scoreCmd.String("evidence", "evidence.json", "path to evidence JSON file")
+	format := scoreCmd.String("format", "text", "output format: text, html")
+	outPath := scoreCmd.String("out", "", "output file path (for html format)")
 
-	// Also support bare-flags form (no 'score' keyword)
-	bareCmd := flag.NewFlagSet("decay", flag.ExitOnError)
-	bareCmd.StringVar(&evidencePath, "evidence", "evidence.json", "path to evidence JSON file")
-	bareCmd.StringVar(&format, "format", "text", "output format: text, html")
-	bareCmd.StringVar(&outPath, "out", "", "output file path (for html format)")
-
-	if os.Args[1] == "score" {
-		scoreCmd.Parse(os.Args[2:])
-	} else if strings.HasPrefix(os.Args[1], "-") {
-		bareCmd.Parse(os.Args[1:])
-	} else {
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
-		fmt.Fprintf(os.Stderr, "usage: decay [score] [flags]\n")
+	// Accept both `decay score [flags]` and `decay [flags]`.
+	// The stdlib flag package stops parsing at the first positional
+	// argument, so a bare top-level FlagSet would silently ignore
+	// every flag placed after the word "score".
+	args := os.Args[1:]
+	switch {
+	case len(args) == 0:
+		// defaults
+	case args[0] == "score":
+		args = args[1:]
+	case strings.HasPrefix(args[0], "-"):
+		// bare-flags form
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: decay [score] [-evidence file] [-format text|html] [-out file]\n", args[0])
+		os.Exit(2)
+	}
+	if err := scoreCmd.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
-	data, err := os.ReadFile(evidencePath)
+	data, err := os.ReadFile(*evidencePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading evidence: %v\n", err)
 		os.Exit(1)
@@ -57,27 +53,32 @@ func main() {
 
 	results := score.ScoreAll(evs)
 
+	// Sort: worst decay first
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].DecayScore > results[j].DecayScore
 	})
 
-	switch format {
+	switch *format {
 	case "html":
-		html := renderHTML(results, evidencePath)
-		if outPath != "" {
-			os.WriteFile(outPath, []byte(html), 0644)
-			fmt.Printf("dashboard written to %s\n", outPath)
+		html := renderHTML(*evidencePath, results)
+		if *outPath != "" {
+			if err := os.WriteFile(*outPath, []byte(html), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *outPath, err)
+				os.Exit(1)
+			}
+			fmt.Printf("dashboard written to %s\n", *outPath)
 		} else {
 			fmt.Print(html)
 		}
 	default:
-		fmt.Print(renderText(results, evidencePath))
+		fmt.Print(renderText(*evidencePath, results))
 	}
 }
 
-func renderText(results []score.Result, evidencePath string) string {
+func renderText(evidencePath string, results []score.Result) string {
 	var sb strings.Builder
 
+	// Header
 	sb.WriteString(fmt.Sprintf("\033[1;36mdecay %s\033[0m — detection-decay scorer\n", version))
 	sb.WriteString(fmt.Sprintf("evidence: %s\n\n", evidencePath))
 
@@ -86,6 +87,7 @@ func renderText(results []score.Result, evidencePath string) string {
 		return sb.String()
 	}
 
+	// Table
 	sb.WriteString("┌──────────────────────────────────────┬──────┬────────┬───────┬───────┬────────────────────┐\n")
 	sb.WriteString("│ RULE / STATE                         │ LIVE │ VOLUME │ FIELD │ DECAY │ VERDICT            │\n")
 	sb.WriteString("├──────────────────────────────────────┼──────┼────────┼───────┼───────┼────────────────────┤\n")
@@ -124,6 +126,7 @@ func renderText(results []score.Result, evidencePath string) string {
 
 	sb.WriteString("└──────────────────────────────────────┴──────┴────────┴───────┴───────┴────────────────────┘\n\n")
 
+	// Reason codes
 	sb.WriteString("\033[1mReason codes\033[0m\n")
 	for _, r := range results {
 		if r.Verdict == score.VHealthy {
@@ -134,6 +137,7 @@ func renderText(results []score.Result, evidencePath string) string {
 		sb.WriteString(fmt.Sprintf("  └ %s\n", r.Reason))
 	}
 
+	// Summary
 	healthy := 0
 	dead := 0
 	worst := 0.0
@@ -154,7 +158,7 @@ func renderText(results []score.Result, evidencePath string) string {
 	return sb.String()
 }
 
-func renderHTML(results []score.Result, evidencePath string) string {
+func renderHTML(evidencePath string, results []score.Result) string {
 	var sb strings.Builder
 	sb.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>decay dashboard</title>
 <style>
@@ -177,11 +181,12 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		sb.WriteString(fmt.Sprintf(`<div class="hero">
 <h1>decay %s — detection-decay dashboard</h1>
 <p>evidence: %s</p>
-<div class="worst gray">no evidence rows — nothing to score</div>
+<p class="gray">no evidence rows — nothing to score</p>
 </div></body></html>`, version, evidencePath))
 		return sb.String()
 	}
 
+	// Find worst
 	worst := results[0]
 	for _, r := range results {
 		if r.DecayScore > worst.DecayScore {
@@ -189,6 +194,7 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		}
 	}
 
+	// Hero
 	vcls := "healthy"
 	if worst.Verdict == "DEAD:SOURCE" {
 		vcls = "dead-source"
@@ -209,6 +215,7 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 		}(),
 		worst.Reason))
 
+	// Table
 	sb.WriteString("<table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr>")
 	for _, r := range results {
 		live := fmt.Sprintf(`<span class="healthy">%s</span>`, r.Liveness)
@@ -257,6 +264,7 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 }
 
 func padRight(s string, width int) string {
+	// Strip ANSI codes before measuring
 	clean := s
 	for {
 		start := strings.Index(clean, "\033[")
@@ -270,7 +278,7 @@ func padRight(s string, width int) string {
 		clean = clean[:start] + clean[start+end+1:]
 	}
 	if len(clean) >= width {
-		return s[:width+len(s)-len(clean)]
+		return s[:width+len(s)-len(clean)] // approximate
 	}
 	return s + strings.Repeat(" ", width-len(clean))
 }

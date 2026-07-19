@@ -12,6 +12,10 @@
 #   export DECAY_ES_USER="admin"
 #   export DECAY_ES_PASS="..."          # or use DECAY_ES_NETRC=1 with ~/.netrc
 #
+#   Prefer --netrc (DECAY_ES_NETRC=1): the -u flag passes credentials in
+#   argv which is visible in ps(1) to any local user.  netrc keeps them
+#   out of the process table entirely.
+#
 # Usage:
 #   ./scripts/collect-opensearch.sh \
 #     --index 'wazuh-alerts-*' \
@@ -81,6 +85,12 @@ LIVENESS="${DECAY_LIVENESS:-active}"
 VOLUME="$(es_count "")"
 
 # 3. Field populate rate: events where the field exists / all events
+# NOTE: ES `exists` matches any document with the field present,
+# INCLUDING empty strings ("").  A pipeline that blanks a field
+# rather than dropping it will report 100%% populated — exactly
+# the silent failure this tool exists to catch.  For now this is
+# a documented limitation; consider extending the query to exclude
+# empty strings with a must_not { term: { field: "" } } clause.
 if [[ "$VOLUME" -gt 0 ]]; then
   WITH_FIELD="$(es_count "$(jq -n --arg f "$FIELD" '{exists:{field:$f}}')")"
   FIELD_POPULATE=$(jq -n --argjson a "$WITH_FIELD" --argjson b "$VOLUME" '$a / $b')
@@ -93,9 +103,11 @@ BASE_FP=$(jq -r '.baseline_field_populate' "$BASELINE")
 
 jq -n \
   --arg rule "$RULE" --arg state "$STATE" --arg liveness "$LIVENESS" \
+  --arg field "$FIELD" \
   --argjson volume "$VOLUME" --argjson bvol "$BASE_VOL" \
   --argjson fp "$FIELD_POPULATE" --argjson bfp "$BASE_FP" \
   '[{ rule:$rule, state:$state, liveness:$liveness,
+      field:$field,
       volume:$volume, baseline_volume:$bvol,
       field_populate:$fp, baseline_field_populate:$bfp }]' > "$OUT"
 

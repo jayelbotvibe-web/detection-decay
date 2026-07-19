@@ -2,6 +2,24 @@
 
 All notable changes to detection-decay.
 
+## [Unreleased] — fix/verdict-thresholds
+
+### Fixed
+- **Banded verdicts replace binary HEALTHY/DEAD.** P(source) and P(field) are now continuous ratios with three bands: ≥0.8 healthy, 0.2–0.8 DEGRADED, <0.2 dead. A `DEGRADED` verdict was added alongside the existing four.
+- **Partial field drift now caught.** A rule with 5% field populate (95% decay) previously reported HEALTHY; now correctly reports DEAD:FIELD. This is the most common production failure — schema/decoder changes usually affect a subset of events.
+- **Continuous volume scoring.** P(source) is now a ratio (volume/baseline) instead of a binary step at 10%. An 89% volume collapse now reports DEAD:SOURCE instead of HEALTHY.
+- **Field name no longer hardcoded.** The `Evidence` struct gained a `Field` field; reason strings use it instead of always saying "Image". Falls back to "field" when absent.
+- **Renderer agreement.** Text and HTML renderers now share a `tally()` function and use the same banding constants. The HTML hero no longer renders INSUFFICIENT_DATA with the green `.healthy` class.
+- **HTML escaping.** All user-controlled values (rule, state, liveness, reason, field, evidence path) are now escaped via `html.EscapeString`, preventing XSS from index-derived input.
+- **No-baseline abstention.** `volume:0, baseline_volume:0` now reports INSUFFICIENT_DATA instead of DEAD:SOURCE.
+- **Stable sort.** `sort.SliceStable` with rule-name tiebreak ensures deterministic output order.
+- **Dead code removed.** HTML hero no longer loops to find worst (results are pre-sorted).
+- **`collect-opensearch.sh` improvements:** emits `field` in evidence JSON, documents argv credential exposure and recommends `--netrc`, documents the `exists`-counts-empty-strings limitation.
+
+### Changed
+- **Evidence format** gained an optional `"field"` key (string). Old evidence files without it continue to parse; the scorer falls back to the neutral word "field".
+- **Demo dashboard and evidence** regenerated with the new field key and updated verdicts.
+
 ## [v0.1.1] — 2026-07-09
 
 ### Fixed

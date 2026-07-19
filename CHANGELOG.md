@@ -2,9 +2,14 @@
 
 All notable changes to detection-decay.
 
-## [Unreleased] — fix/verdict-thresholds
+## [v0.2.0] — 2026-07-20
+
+### Migration note
+- **Verdict output has changed.** Rows that previously reported `HEALTHY` may now report `DEGRADED` or `DEAD:*`.  The new `DEGRADED` verdict did not exist in v0.1.x.  Anyone with alerting or dashboards keyed on exact verdict string labels must account for the five-value set: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`.
+- **Evidence format is backward-compatible.** Old evidence files without the optional `"field"` key continue to parse; the scorer falls back to the neutral word `"field"` in reason strings.
 
 ### Fixed
+- **Source abstention alone now blocks HEALTHY.** A row with `baseline_volume:0` and healthy field data previously fell through to HEALTHY; now correctly reports INSUFFICIENT_DATA. Zero events with no baseline is never healthy evidence.
 - **Banded verdicts replace binary HEALTHY/DEAD.** P(source) and P(field) are now continuous ratios with three bands: ≥0.8 healthy, 0.2–0.8 DEGRADED, <0.2 dead. A `DEGRADED` verdict was added alongside the existing four.
 - **Partial field drift now caught.** A rule with 5% field populate (95% decay) previously reported HEALTHY; now correctly reports DEAD:FIELD. This is the most common production failure — schema/decoder changes usually affect a subset of events.
 - **Continuous volume scoring.** P(source) is now a ratio (volume/baseline) instead of a binary step at 10%. An 89% volume collapse now reports DEAD:SOURCE instead of HEALTHY.

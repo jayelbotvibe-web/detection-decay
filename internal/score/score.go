@@ -121,6 +121,13 @@ func Score(ev Evidence) Result {
 		r.Verdict = VInsufficientData
 		r.Reason = "no baseline data — insufficient to evaluate"
 
+	// Source abstention alone: no baseline volume means we can't
+	// evaluate the source gate.  Zero events with no baseline is
+	// never healthy evidence.
+	case r.SourceAbstain:
+		r.Verdict = VInsufficientData
+		r.Reason = "no source baseline — insufficient to evaluate"
+
 	// Source death beats field abstain: if events have stopped,
 	// the field being null is a consequence, not the cause.
 	case r.PSource < DeadThreshold:

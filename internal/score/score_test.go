@@ -191,6 +191,36 @@ func TestNoBaselineInsufficientData(t *testing.T) {
 	}
 }
 
+func TestSourceAbstainAloneInsufficientData(t *testing.T) {
+	// Regression: source abstain alone (baseline_volume=0, field healthy)
+	// must yield INSUFFICIENT_DATA, not HEALTHY.
+	// The collector can't produce this row but the scorer is a public API.
+	fp := 1.0
+	ev := Evidence{
+		Rule:                  "newrule.yml",
+		State:                 "no baseline",
+		Liveness:              "active",
+		Volume:                0,
+		BaselineVolume:        0,
+		Field:                 "src_ip",
+		FieldPopulate:         &fp,
+		BaselineFieldPopulate: 1.0,
+	}
+	r := Score(ev)
+	if r.Verdict != VInsufficientData {
+		t.Errorf("expected INSUFFICIENT_DATA for source-abstain alone, got %s (decay %.2f)", r.Verdict, r.DecayScore)
+	}
+	if r.DecayScore != 0.0 {
+		t.Errorf("expected decay 0.00 (source abstain), got %.2f", r.DecayScore)
+	}
+	if !r.SourceAbstain {
+		t.Error("expected SourceAbstain=true")
+	}
+	if r.FieldAbstain {
+		t.Error("expected FieldAbstain=false")
+	}
+}
+
 func TestHealthyInvariant(t *testing.T) {
 	// Invariant: a row may never report HEALTHY with a non-trivial DecayScore.
 	// Both gates at 0.85 (just below HealthyThreshold of 0.8... wait,

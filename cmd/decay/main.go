@@ -13,7 +13,7 @@ import (
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
 
-const version = "v0.1.1"
+const version = "v0.2.0"
 
 func main() {
 	scoreCmd := flag.NewFlagSet("score", flag.ExitOnError)

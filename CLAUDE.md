@@ -53,7 +53,12 @@ absence of dependencies is a feature of this tool.
   joining; the id regex alone accepts `..`.
 - `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`
 - `scripts/collect-opensearch.sh` — reference evidence collector for
-  OpenSearch/Wazuh/Elasticsearch
+  OpenSearch/Wazuh/Elasticsearch. Still one rule per invocation.
+- `scripts/sigma-to-rules.py` + `scripts/fieldmap-wazuh.json` — derive a rules file from
+  Sigma. **The only Python, and the only PyYAML**, deliberately: Sigma is YAML and the
+  binary is stdlib-only, so conversion happens here and the binary reads JSON. Tests are
+  `scripts/sigma_to_rules_test.py` (stdlib `unittest`), run by the `sigma` CI job against
+  vendored fixtures in `testdata/sigma/`. Nothing consumes `rules.json` yet.
 - `evidence.json` — demo input; `demo/dashboard.html` — generated artifact
 
 No code generation, no `go generate`.

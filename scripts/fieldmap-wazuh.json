@@ -1,0 +1,41 @@
+{
+  "name": "wazuh",
+
+  "_comment": [
+    "Translates Sigma field names to the field names in a Wazuh indexer.",
+    "",
+    "A logsource may set 'template' (a naming convention applied to every field)",
+    "and/or 'fields' (explicit entries, which override the template). A Sigma",
+    "field matching neither is reported as unmapped rather than guessed at.",
+    "",
+    "VERIFY THESE AGAINST YOUR OWN INDEX before trusting a decay score built on",
+    "them. A field name that does not exist reads as 0% populate — permanent,",
+    "confident, wrong field drift."
+  ],
+
+  "logsources": {
+    "windows/process_creation": {
+      "_comment": [
+        "Wazuh's Sysmon decoder lowercases the first letter of each EventData",
+        "field, so Image -> data.win.eventdata.image. That convention is the",
+        "template; data.win.eventdata.image is confirmed against this repo's",
+        "own evidence.json."
+      ],
+      "filter": "data.win.system.eventID:1",
+      "template": "data.win.eventdata.{lcfirst}",
+      "fields": {}
+    },
+
+    "linux/process_creation": {
+      "_comment": [
+        "Deliberately left without a template. Linux process telemetry reaches",
+        "a Wazuh index through auditd, and the field layout depends on your",
+        "audit rules and decoder — there is no single convention to assume.",
+        "Fill this in from your own index; until you do, every Linux rule",
+        "reports its fields as unmapped, which is the honest answer."
+      ],
+      "filter": "",
+      "fields": {}
+    }
+  }
+}

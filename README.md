@@ -140,6 +140,44 @@ Emit a machine-readable report:
 ./decay score --evidence evidence.json --format json | jq '.summary'
 ```
 
+### Deriving what to measure from your Sigma rules
+
+Which field a detection depends on was hand-declared, one `--field` argument at a time —
+which is why the tool was calibrated for exactly one rule. Sigma already states the answer:
+every key in a rule's `detection` block is a field the rule cannot fire without.
+
+```bash
+./scripts/sigma-to-rules.py --map scripts/fieldmap-wazuh.json \
+    --out rules.json path/to/your/sigma/rules/
+```
+
+```json
+{
+  "rule": "win_proc_create.yml",
+  "product": "windows", "category": "process_creation",
+  "techniques": ["t1059"],
+  "filter": "data.win.system.eventID:1",
+  "sigma_fields": ["Image"],
+  "fields": ["data.win.eventdata.image"],
+  "unmapped_fields": []
+}
+```
+
+Sigma is YAML and the decay binary is stdlib-only, so the conversion happens in this script
+and the binary reads JSON. It is the only place PyYAML is needed.
+
+Field names are Sigma's, not your index's. [`scripts/fieldmap-wazuh.json`](scripts/fieldmap-wazuh.json)
+translates them — a logsource can supply a `template` (a naming convention) and/or explicit
+`fields` entries, which win over the template.
+
+**Anything that resolves to neither is reported as unmapped, never guessed at.** A fabricated
+field name would measure 0% populate forever and read as permanent, confident field drift —
+the exact failure this tool exists to catch. The shipped map therefore covers Windows Sysmon
+(where Wazuh's decoder lowercases the first letter, so `Image` → `data.win.eventdata.image`)
+and deliberately leaves Linux empty: auditd field layout depends on your audit rules, and
+there is no single convention worth assuming. Verify any mapping against your own index
+before trusting a score built on it.
+
 ### Tracking decay over time
 
 A single run says a rule looks dead; a series says *when it died*. Pass `--history` and each
@@ -256,7 +294,8 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 
 - [ ] **Live mode** (`--live`) — poll the indexer directly. Prototyped on `feat/live-mode`, but that branch forked before v0.2.0 and is not merge-ready; being reimplemented on `main` with no third-party dependencies
 - [ ] **P(behavior) gate** — rule match freshness scoring (time since last alert match)
-- [ ] **Multi-rule scope** — calibrate across full Sigma rule sets, not just `win_proc_create.yml`
+- [x] **Derive fields from Sigma** — `scripts/sigma-to-rules.py` extracts the required fields, logsource and ATT&CK tags from a rule set
+- [ ] **Multi-rule collection** — sweep a whole `rules.json` in one pass instead of one rule per invocation
 - [x] **Run history and trend index** (`--history`) — persist each run, report what changed since the last one
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected
 - [ ] **Rolling baseline calibration** — derive baselines from recorded history instead of a hand-written file
@@ -267,7 +306,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 
 - **Evidence-driven**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
 - **P(behavior) deferred**: alert freshness not yet modeled — the gate is held at 1.0 and says so in every explanation.
-- **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
+- **Single-rule scope in the collector**: `scripts/sigma-to-rules.py` derives the fields for a whole rule set, but `scripts/collect-opensearch.sh` still measures one rule per invocation — nothing yet consumes `rules.json` to sweep them.
 - **Hand-maintained baselines**: `--history` records runs, but nothing yet derives a rolling baseline from them, so a fixed baseline will read a quiet weekend as `DEGRADED`. Set `baseline_age_seconds` so at least the confidence reflects it.
 - **No positive control**: the scorer trusts that a measurement of zero means zero. Set `probe_error` when your collector knows better.
 

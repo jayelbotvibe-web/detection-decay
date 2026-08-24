@@ -39,3 +39,29 @@ jobs:
             echo "::error::demo/dashboard.html is stale — regenerate it"
             exit 1
           }
+
+  sigma:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML
+        # Only the Sigma converter needs this. The decay binary stays stdlib-only;
+        # that is why the YAML never reaches it.
+        run: pip install pyyaml
+      - name: Converter tests
+        run: python3 scripts/sigma_to_rules_test.py
+      - name: Converter runs against real Sigma rules
+        run: |
+          python3 scripts/sigma-to-rules.py --map scripts/fieldmap-wazuh.json \
+            --out /tmp/rules.json testdata/sigma
+          python3 -c "
+          import json,sys
+          d=json.load(open('/tmp/rules.json'))
+          assert d['rules'], 'converter produced no rules'
+          w=[r for r in d['rules'] if r['product']=='windows']
+          assert w and w[0]['fields']==['data.win.eventdata.image'], w
+          print(f\"ok: {len(d['rules'])} rules\")
+          "

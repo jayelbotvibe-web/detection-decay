@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sort"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -219,12 +219,7 @@ func TestSortStable(t *testing.T) {
 	}
 	results := score.ScoreAll(evs)
 	// Apply the same sort as main().
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].DecayScore != results[j].DecayScore {
-			return results[i].DecayScore > results[j].DecayScore
-		}
-		return results[i].Rule < results[j].Rule
-	})
+	sortResults(results)
 	// Results should be in rule-name order (all decay = 0.0).
 	if results[0].Rule != "a.yml" {
 		t.Errorf("expected a.yml first, got %s", results[0].Rule)
@@ -381,5 +376,116 @@ func TestTableRowsAlign(t *testing.T) {
 			t.Errorf("table line %d is %d runes, header is %d:\n%s\n%s",
 				i, w, widths[0], samples[0], samples[i])
 		}
+	}
+}
+
+// ---------- exit-code contract ----------
+
+// TestFailOnRanking pins the --fail-on contract. This is the tool's interface
+// to a scheduler: it always exited 0, so nothing could act on its findings.
+func TestFailOnRanking(t *testing.T) {
+	cases := []struct {
+		verdict string
+		rank    int
+	}{
+		{score.VHealthy, rankHealthy},
+		{score.VInsufficientData, rankUnknown},
+		{score.VProbeError, rankUnknown},
+		{score.VDegraded, rankDegraded},
+		{score.VDeadSource, rankDead},
+		{score.VDeadField, rankDead},
+	}
+	for _, c := range cases {
+		if got := verdictRank(c.verdict); got != c.rank {
+			t.Errorf("verdictRank(%s) = %d, want %d", c.verdict, got, c.rank)
+		}
+	}
+
+	// Severity must be strictly ordered, or a threshold means nothing.
+	if !(rankHealthy < rankUnknown && rankUnknown < rankDegraded && rankDegraded < rankDead) {
+		t.Fatal("verdict ranks are not strictly ordered")
+	}
+
+	// "none" must never fire, whatever the findings.
+	none, err := parseFailOn("none")
+	if err != nil {
+		t.Fatalf("parseFailOn(none): %v", err)
+	}
+	if rankDead >= none {
+		t.Error("--fail-on none should never trigger, even on DEAD")
+	}
+
+	for _, bad := range []string{"sideways", "critical", "1"} {
+		if _, err := parseFailOn(bad); err == nil {
+			t.Errorf("parseFailOn(%q) should have errored", bad)
+		}
+	}
+}
+
+func TestWorstRankIgnoresDecayScore(t *testing.T) {
+	// PROBE_ERROR carries no decay, so a decay-ordered scan would rank it
+	// mildest. Severity has to come from the verdict, not the number.
+	results := score.ScoreAll([]score.Evidence{
+		{Rule: "a.yml", Liveness: "active", Volume: 64, BaselineVolume: 64, FieldPopulate: fpv(1.0), BaselineFieldPopulate: 1.0},
+		{Rule: "b.yml", Liveness: "active", Volume: 0, BaselineVolume: 64, ProbeError: "connection refused"},
+	})
+	if got := worstRank(results); got != rankUnknown {
+		t.Errorf("worstRank = %d, want rankUnknown (%d)", got, rankUnknown)
+	}
+	if got := worstVerdict(results); got != score.VProbeError {
+		t.Errorf("worstVerdict = %s, want %s", got, score.VProbeError)
+	}
+}
+
+// ---------- json report ----------
+
+func TestJSONReportIsMachineReadable(t *testing.T) {
+	results := score.ScoreAll([]score.Evidence{
+		{Rule: "r.yml", State: "field-drift", Liveness: "active", Volume: 234, BaselineVolume: 64,
+			FieldPopulate: fpv(0.0), BaselineFieldPopulate: 1.0, Field: "image"},
+	})
+	sortResults(results)
+
+	var rep jsonReport
+	if err := json.Unmarshal([]byte(renderJSON("evidence.json", results)), &rep); err != nil {
+		t.Fatalf("report is not valid JSON: %v", err)
+	}
+
+	if rep.Version != version {
+		t.Errorf("version %q, want %q", rep.Version, version)
+	}
+	if rep.Summary.WorstVerdict != score.VDeadField {
+		t.Errorf("worst_verdict %q, want %q", rep.Summary.WorstVerdict, score.VDeadField)
+	}
+	if rep.Summary.Dead != 1 || rep.Summary.Evaluated != 1 {
+		t.Errorf("summary miscounted: %+v", rep.Summary)
+	}
+
+	// Numbers must be carried as numbers. Recovering a score by re-parsing the
+	// prose that describes it is how the sibling project's dashboard ended up
+	// showing 0.00 for every alert.
+	got := rep.Results[0]
+	if got.DecayScore != 1.0 {
+		t.Errorf("decay_score %.2f, want 1.00", got.DecayScore)
+	}
+	if len(got.Gates) != 3 {
+		t.Errorf("expected 3 gates in the report, got %d", len(got.Gates))
+	}
+	if got.ConfidenceLabel == "" || got.Explanation == "" {
+		t.Error("report dropped the confidence label or the explanation")
+	}
+}
+
+func TestJSONReportEmptyIsStillValid(t *testing.T) {
+	out := renderJSON("evidence.json", nil)
+	var rep jsonReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("empty report is not valid JSON: %v", err)
+	}
+	if rep.Results == nil {
+		t.Error("results should marshal as [], not null — a consumer should not have to nil-check")
+	}
+	if rep.Summary.Evaluated != 0 {
+		t.Errorf("empty report claims %d evaluated", rep.Summary.Evaluated)
 	}
 }

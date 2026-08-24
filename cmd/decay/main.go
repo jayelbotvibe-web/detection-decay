@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,8 +20,10 @@ const version = "v0.2.0"
 func main() {
 	scoreCmd := flag.NewFlagSet("score", flag.ExitOnError)
 	evidencePath := scoreCmd.String("evidence", "evidence.json", "path to evidence JSON file")
-	format := scoreCmd.String("format", "text", "output format: text, html")
-	outPath := scoreCmd.String("out", "", "output file path (for html format)")
+	format := scoreCmd.String("format", "text", "output format: text, html, json")
+	outPath := scoreCmd.String("out", "", "output file path (default stdout)")
+	failOn := scoreCmd.String("fail-on", "none", "exit "+fmt.Sprint(exitDecay)+" when any row is at or worse than: none, degraded, dead, unknown")
+	showVersion := scoreCmd.Bool("version", false, "print version and exit")
 
 	// Accept both `decay score [flags]` and `decay [flags]`.
 	args := os.Args[1:]
@@ -32,11 +35,30 @@ func main() {
 	case strings.HasPrefix(args[0], "-"):
 		// bare-flags form
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: decay [score] [-evidence file] [-format text|html] [-out file]\n", args[0])
-		os.Exit(2)
+		fmt.Fprintf(os.Stderr, "unknown command %q\n%s", args[0], usage)
+		os.Exit(exitUsage)
 	}
 	if err := scoreCmd.Parse(args); err != nil {
-		os.Exit(2)
+		os.Exit(exitUsage)
+	}
+
+	if *showVersion {
+		fmt.Printf("decay %s\n", version)
+		return
+	}
+
+	// Positional arguments used to be swallowed silently: `decay score foo.json`
+	// scored evidence.json and exited 0, reporting on a file the user never named.
+	if scoreCmd.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument %q — did you mean -evidence %s?\n%s",
+			scoreCmd.Arg(0), scoreCmd.Arg(0), usage)
+		os.Exit(exitUsage)
+	}
+
+	threshold, err := parseFailOn(*failOn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n%s", err, usage)
+		os.Exit(exitUsage)
 	}
 
 	data, err := os.ReadFile(*evidencePath)
@@ -44,40 +66,148 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error reading evidence: %v\n", err)
 		os.Exit(1)
 	}
+	// DisallowUnknownFields turns a mistyped key into a parse error instead of a
+	// silent default. A typo'd "volume" used to decode as 0 and report a total
+	// source outage that never happened.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var evs []score.Evidence
-	if err := json.Unmarshal(data, &evs); err != nil {
+	if err := dec.Decode(&evs); err != nil {
 		fmt.Fprintf(os.Stderr, "error parsing evidence: %v\n", err)
+		os.Exit(1)
+	}
+
+	if errs := score.Validate(evs); len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "error: %s has %d invalid row(s):\n", *evidencePath, len(errs))
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "  %v\n", e)
+		}
 		os.Exit(1)
 	}
 
 	results := score.ScoreAll(evs)
 
-	// Sort: worst decay first, tiebreak on rule name for stable output.
+	sortResults(results)
+
+	var out string
+	switch *format {
+	case "html":
+		out = renderHTML(*evidencePath, results)
+	case "json":
+		out = renderJSON(*evidencePath, results)
+	case "text":
+		out = renderText(*evidencePath, results)
+	default:
+		// An unrecognised format used to fall through to text and exit 0, so
+		// `--format json` silently produced a terminal table.
+		fmt.Fprintf(os.Stderr, "unknown format %q — expected text, html or json\n", *format)
+		os.Exit(exitUsage)
+	}
+
+	if *outPath != "" {
+		if err := os.WriteFile(*outPath, []byte(out), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *outPath, err)
+			os.Exit(exitIO)
+		}
+		if *format == "html" {
+			fmt.Printf("dashboard written to %s\n", *outPath)
+		}
+	} else {
+		fmt.Print(out)
+	}
+
+	// Exit non-zero so the tool can gate a cron job or a CI step. Without this
+	// it always exited 0 and nothing could act on its findings.
+	if worst := worstRank(results); worst >= threshold {
+		fmt.Fprintf(os.Stderr, "decay detected: %s (--fail-on %s)\n", rankName(worst), *failOn)
+		os.Exit(exitDecay)
+	}
+}
+
+// Exit codes. These are the tool's contract with a scheduler.
+const (
+	exitIO    = 1 // I/O or parse failure
+	exitUsage = 2 // bad invocation
+	exitDecay = 3 // scored successfully, and found decay at or above --fail-on
+)
+
+const usage = `usage: decay [score] [-evidence file] [-format text|html|json] [-out file]
+             [-fail-on none|degraded|dead|unknown] [-version]
+`
+
+// Verdict severity ranks, used only by --fail-on.
+const (
+	rankHealthy = iota
+	rankUnknown // measured nothing: INSUFFICIENT_DATA, PROBE_ERROR
+	rankDegraded
+	rankDead
+	rankNever = 99 // --fail-on none
+)
+
+func rankName(r int) string {
+	switch r {
+	case rankDead:
+		return "dead"
+	case rankDegraded:
+		return "degraded"
+	case rankUnknown:
+		return "unknown"
+	default:
+		return "healthy"
+	}
+}
+
+// parseFailOn maps the flag to the lowest rank that should fail the run.
+func parseFailOn(v string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "none":
+		return rankNever, nil
+	case "unknown":
+		return rankUnknown, nil
+	case "degraded":
+		return rankDegraded, nil
+	case "dead":
+		return rankDead, nil
+	default:
+		return 0, fmt.Errorf("unknown -fail-on %q — expected none, degraded, dead or unknown", v)
+	}
+}
+
+func verdictRank(v string) int {
+	switch v {
+	case score.VDeadSource, score.VDeadField:
+		return rankDead
+	case score.VDegraded:
+		return rankDegraded
+	case score.VInsufficientData, score.VProbeError:
+		return rankUnknown
+	default:
+		return rankHealthy
+	}
+}
+
+func worstRank(results []score.Result) int {
+	worst := rankHealthy
+	for _, r := range results {
+		if k := verdictRank(r.Verdict); k > worst {
+			worst = k
+		}
+	}
+	return worst
+}
+
+// ---------- shared helpers ----------
+
+// sortResults orders rows worst-decay-first, with a rule-name tiebreak so the
+// output is diffable across runs.
+func sortResults(results []score.Result) {
 	sort.SliceStable(results, func(i, j int) bool {
 		if results[i].DecayScore != results[j].DecayScore {
 			return results[i].DecayScore > results[j].DecayScore
 		}
 		return results[i].Rule < results[j].Rule
 	})
-
-	switch *format {
-	case "html":
-		htmlOut := renderHTML(*evidencePath, results)
-		if *outPath != "" {
-			if err := os.WriteFile(*outPath, []byte(htmlOut), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *outPath, err)
-				os.Exit(1)
-			}
-			fmt.Printf("dashboard written to %s\n", *outPath)
-		} else {
-			fmt.Print(htmlOut)
-		}
-	default:
-		fmt.Print(renderText(*evidencePath, results))
-	}
 }
-
-// ---------- shared helpers ----------
 
 // summary holds computed tallies, shared by both renderers.
 type summary struct {
@@ -405,4 +535,71 @@ func verdictColor(v string) string {
 	default:
 		return "gray"
 	}
+}
+
+// ---------- json renderer ----------
+
+// jsonSummary is persisted as numbers, deliberately. Nothing downstream should
+// ever have to recover a figure by re-parsing the prose that describes it.
+type jsonSummary struct {
+	Evaluated    int     `json:"evaluated"`
+	Healthy      int     `json:"healthy"`
+	Degraded     int     `json:"degraded"`
+	Dead         int     `json:"dead"`
+	Silent       int     `json:"silent"`
+	Unknown      int     `json:"unknown"`
+	WorstDecay   float64 `json:"worst_decay"`
+	WorstVerdict string  `json:"worst_verdict"`
+}
+
+type jsonReport struct {
+	Version  string         `json:"version"`
+	Evidence string         `json:"evidence"`
+	Summary  jsonSummary    `json:"summary"`
+	Results  []score.Result `json:"results"`
+}
+
+// worstVerdict returns the most severe verdict present, by rank rather than by
+// decay score — PROBE_ERROR carries no decay but must not be reported as the
+// mildest row in the set.
+func worstVerdict(results []score.Result) string {
+	worst, name := rankHealthy, score.VHealthy
+	for _, r := range results {
+		if k := verdictRank(r.Verdict); k > worst {
+			worst, name = k, r.Verdict
+		}
+	}
+	if len(results) == 0 {
+		return ""
+	}
+	return name
+}
+
+func renderJSON(evidencePath string, results []score.Result) string {
+	s := tally(results)
+	if results == nil {
+		results = []score.Result{}
+	}
+	rep := jsonReport{
+		Version:  version,
+		Evidence: evidencePath,
+		Summary: jsonSummary{
+			Evaluated:    s.evaluated,
+			Healthy:      s.healthy,
+			Degraded:     s.degraded,
+			Dead:         s.dead,
+			Silent:       s.silent,
+			Unknown:      s.unknown,
+			WorstDecay:   s.worst,
+			WorstVerdict: worstVerdict(results),
+		},
+		Results: results,
+	}
+	b, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		// Unreachable for these types, but never emit malformed JSON silently.
+		fmt.Fprintf(os.Stderr, "error encoding report: %v\n", err)
+		os.Exit(exitIO)
+	}
+	return string(b) + "\n"
 }

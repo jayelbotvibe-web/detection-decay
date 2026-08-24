@@ -61,6 +61,20 @@ query rejected — the row reports `PROBE_ERROR` and no decay, because a zero yo
 measure is not a zero you observed. Reporting that as `DEAD:SOURCE` would page an operator
 about telemetry that may be perfectly healthy.
 
+### Confidence is separate from the verdict
+
+The verdict says *how bad*; confidence says *how sure*. Confidence is reported alongside
+the verdict and is deliberately **never folded into the score** — a thin sample must not be
+able to look like good health. It is discounted by a small baseline (below 30 events), by
+any gate that abstained, and by a baseline more than 30 days old.
+
+The same finding, measured well and measured badly, reaches the same verdict:
+
+```text
+baseline 3000 events   DEAD:FIELD   decay 1.00   confidence 1.00 HIGH
+baseline    4 events   DEAD:FIELD   decay 1.00   confidence 0.57 MEDIUM
+```
+
 ### Every score explains itself
 
 Each gate carries the contributions that produced it, and the explanation is rendered from
@@ -120,6 +134,34 @@ Generate an HTML dashboard:
 ./decay score --evidence evidence.json --format html --out demo/dashboard.html
 ```
 
+Emit a machine-readable report:
+
+```bash
+./decay score --evidence evidence.json --format json | jq '.summary'
+```
+
+### Wiring it into a scheduler
+
+`--fail-on` makes the exit code carry the finding, so cron or CI can act on it:
+
+```bash
+./decay score --evidence evidence-live.json --fail-on dead || notify-oncall
+```
+
+| `--fail-on` | Exits non-zero when any row is |
+|---|---|
+| `none` (default) | never — report only |
+| `unknown` | anything but `HEALTHY`, including `INSUFFICIENT_DATA` and `PROBE_ERROR` |
+| `degraded` | `DEGRADED`, `DEAD:SOURCE` or `DEAD:FIELD` |
+| `dead` | `DEAD:SOURCE` or `DEAD:FIELD` |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | scored successfully, nothing at or above the `--fail-on` threshold |
+| `1` | could not read, parse or validate the evidence file |
+| `2` | bad invocation |
+| `3` | scored successfully, and found decay at or above `--fail-on` |
+
 The evidence format is a JSON array of measurement rows:
 
 ```json
@@ -131,10 +173,20 @@ The evidence format is a JSON array of measurement rows:
     "volume": 234,
     "baseline_volume": 64,
     "field_populate": 0.0,
-    "baseline_field_populate": 1.0
+    "baseline_field_populate": 1.0,
+    "field": "data.win.eventdata.image"
   }
 ]
 ```
+
+Optional keys: `field` (names the field in reason strings), `baseline_age_seconds` (an old
+baseline lowers confidence), and `probe_error` (a string; set it when the measurement itself
+failed, and the row reports `PROBE_ERROR` instead of a fabricated outage).
+
+Input is validated before scoring, and unknown keys are rejected. Both rules exist because
+the failure mode is silent: a mistyped `volume` key used to default to `0` and report a
+total source outage, and an omitted `liveness` key used to report `DEAD:SOURCE — agent
+disconnected` for a row that never mentioned an agent.
 
 ### Generating evidence from a live index
 
@@ -173,10 +225,11 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 
 ## Limitations
 
-- **Evidence-driven MVP**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
-- **P(behavior) deferred**: alert freshness not yet modeled.
+- **Evidence-driven**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
+- **P(behavior) deferred**: alert freshness not yet modeled — the gate is held at 1.0 and says so in every explanation.
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
-- **No closed calibration loop**: the tool scores probes but does not run them.
+- **Hand-maintained baselines**: there is no history and no rolling calibration, so a fixed baseline will read a quiet weekend as `DEGRADED`. Set `baseline_age_seconds` so at least the confidence reflects it.
+- **No positive control**: the scorer trusts that a measurement of zero means zero. Set `probe_error` when your collector knows better.
 
 ⭐ **Star this repo** if you've hit silent detection decay in production. [Issues](https://github.com/jayelbotvibe-web/detection-decay/issues) and PRs welcome.
 

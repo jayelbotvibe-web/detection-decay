@@ -34,6 +34,29 @@ const (
 	OverFloor = DeadThreshold
 )
 
+// Confidence bands and inputs.
+const (
+	ConfHigh = 0.8 // confidence >= this → HIGH
+	ConfMed  = 0.5 // confidence >= this → MEDIUM
+
+	// MinSample is the baseline event count below which a measurement is
+	// treated as statistically thin. A rule that normally fires twice a window
+	// cannot distinguish a real outage from a quiet afternoon.
+	MinSample = 30
+
+	// StaleBaselineSeconds is the age beyond which a baseline is discounted.
+	// Telemetry volume drifts with deployment and seasonality, so an old
+	// baseline measures history rather than health.
+	StaleBaselineSeconds = 30 * 24 * 60 * 60
+)
+
+// Confidence labels.
+const (
+	CHigh   = "HIGH"
+	CMedium = "MEDIUM"
+	CLow    = "LOW"
+)
+
 // MaxHealthyDecay is the decay score below which HEALTHY is permitted.
 // Above this, at least DEGRADED is required.
 //
@@ -93,6 +116,10 @@ type Evidence struct {
 	BaselineFieldPopulate float64  `json:"baseline_field_populate"`
 	Field                 string   `json:"field"`
 
+	// BaselineAgeSeconds is how old the baseline measurement is. Optional; zero
+	// means unknown and is not penalised.
+	BaselineAgeSeconds int `json:"baseline_age_seconds,omitempty"`
+
 	// ProbeError, when non-empty, means the measurement itself failed. A failed
 	// probe must never be reported as a detection outage — that is the worst
 	// possible error for this tool, since it pages an operator about telemetry
@@ -115,6 +142,14 @@ type Result struct {
 	FieldAbstain  bool `json:"field_abstain"`
 
 	Gates []Gate `json:"gates"`
+
+	// Confidence is orthogonal to the verdict and is deliberately NOT folded
+	// into Health. The verdict says how bad; confidence says how sure. Routing
+	// and alerting key on the pair, so a confident DEGRADED and a shaky
+	// DEAD:SOURCE can be handled differently.
+	Confidence      Gate    `json:"confidence"`
+	ConfidenceLabel string  `json:"confidence_label"`
+	ConfidenceScore float64 `json:"confidence_score"`
 
 	Health      float64 `json:"health"`
 	DecayScore  float64 `json:"decay_score"`
@@ -239,6 +274,59 @@ func fieldGate(ev Evidence) Gate {
 	return g
 }
 
+// confidenceGate measures how much weight the verdict deserves. It never
+// changes the verdict — an operator needs to know that a source looks dead AND
+// that the measurement behind that claim is thin.
+func confidenceGate(ev Evidence, gates []Gate) Gate {
+	g := Gate{Name: "confidence"}
+
+	// Sample size is judged on the baseline, not the current volume: during a
+	// real outage the current volume is zero, and that is the finding, not a
+	// reason to doubt it.
+	switch {
+	case ev.BaselineVolume <= 0:
+		g.Factors = append(g.Factors, Contribution{
+			Reason: "no baseline volume to size the sample", Value: 0.5})
+	case ev.BaselineVolume < MinSample:
+		v := 0.5 + 0.5*float64(ev.BaselineVolume)/MinSample
+		g.Factors = append(g.Factors, Contribution{
+			Reason: fmt.Sprintf("thin sample — baseline of %d events is below the %d-event floor",
+				ev.BaselineVolume, MinSample), Value: v})
+	default:
+		g.Factors = append(g.Factors, Contribution{
+			Reason: fmt.Sprintf("baseline of %d events clears the %d-event sample floor",
+				ev.BaselineVolume, MinSample), Value: 1.0})
+	}
+
+	for _, gate := range gates {
+		if gate.Abstain {
+			g.Factors = append(g.Factors, Contribution{
+				Reason: fmt.Sprintf("%s gate abstained — one link unmeasured", gate.Name), Value: 0.5})
+		}
+	}
+
+	if ev.BaselineAgeSeconds > StaleBaselineSeconds {
+		g.Factors = append(g.Factors, Contribution{
+			Reason: fmt.Sprintf("baseline is %d days old — volume drifts with deployment and seasonality",
+				ev.BaselineAgeSeconds/86400), Value: 0.6})
+	}
+
+	g.Value = g.product()
+	return g
+}
+
+// confidenceLabel bands a confidence value.
+func confidenceLabel(v float64) string {
+	switch {
+	case v >= ConfHigh:
+		return CHigh
+	case v >= ConfMed:
+		return CMedium
+	default:
+		return CLow
+	}
+}
+
 // behaviorGate is the third link: rule-match freshness. Not yet modeled, and
 // held at 1.0 so it cannot influence a verdict it did not measure.
 func behaviorGate() Gate {
@@ -283,6 +371,9 @@ func Score(ev Evidence) Result {
 			}},
 		}
 		r.Gates = []Gate{g}
+		r.Confidence = Gate{Name: "confidence", Value: 0, Band: BandDead,
+			Factors: []Contribution{{Reason: "the probe failed — nothing was measured", Value: 0}}}
+		r.ConfidenceScore, r.ConfidenceLabel = 0, CLow
 		r.PSource, r.PField, r.PBehavior = 1.0, 1.0, 1.0
 		r.SourceAbstain, r.FieldAbstain = true, true
 		r.Health, r.DecayScore = 1.0, 0.0
@@ -300,6 +391,13 @@ func Score(ev Evidence) Result {
 	r.PSource, r.PField, r.PBehavior = src.Value, fld.Value, bhv.Value
 	r.SourceAbstain, r.FieldAbstain = src.Abstain, fld.Abstain
 
+	r.Confidence = confidenceGate(ev, r.Gates)
+	r.Confidence.Band = bandFor(r.Confidence.Value)
+	r.ConfidenceScore = r.Confidence.Value
+	r.ConfidenceLabel = confidenceLabel(r.Confidence.Value)
+
+	// Confidence is NOT a factor here. It qualifies the verdict, it does not
+	// change it — folding it in would let a thin sample look like good health.
 	r.Health = src.Value * fld.Value * bhv.Value
 	r.DecayScore = 1.0 - r.Health
 
@@ -394,6 +492,12 @@ func explain(r Result) string {
 	b.WriteString(fmt.Sprintf("\nDecayScore: 1 - (%s) = %.2f → %s\n",
 		strings.Join(operands, " × "), r.DecayScore, r.Verdict))
 	b.WriteString(fmt.Sprintf("  %s\n", r.Reason))
+
+	b.WriteString(fmt.Sprintf("\nConfidence (%s): %.2f — does not affect the score above\n",
+		r.ConfidenceLabel, r.ConfidenceScore))
+	for _, f := range r.Confidence.Factors {
+		b.WriteString(fmt.Sprintf("  • %s (×%.2f)\n", f.Reason, f.Value))
+	}
 	return b.String()
 }
 

@@ -7,16 +7,25 @@ All notable changes to detection-decay.
 ### Migration note
 - **A sixth verdict, `PROBE_ERROR`, was added.** Anything keyed on exact verdict labels must handle the full set: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`, `PROBE_ERROR`.
 - **Evidence format is backward-compatible.** The new `"probe_error"` key is optional; files without it parse unchanged.
+- **Unknown keys in evidence files are now rejected.** A file carrying a key the scorer does not recognise fails to parse instead of silently defaulting it. `evidence.json` lost its `_note` key for this reason; the same statement is in the README.
+- **`liveness` is now required.** Omitting it previously reported `DEAD:SOURCE — agent disconnected`.
 - **`Result` gained `gates` and `explanation`.** `p_source`, `p_field` and `p_behavior` are retained and now mirror the corresponding gate values. Note `p_field` is `1.0` rather than `0` when the field gate abstains — it previously carried a zero that was never used in the product.
 - **Verdicts change for two input classes:** volume above 3× baseline now reports `DEGRADED` (was `HEALTHY`), and a row carrying `probe_error` reports `PROBE_ERROR` (was `DEAD:SOURCE`).
 
 ### Added
+- **Exit codes carry the finding.** `--fail-on none|unknown|degraded|dead` exits `3` when any row is at or above the threshold. The tool always exited `0`, so it could not gate a cron job or a CI step — the single cheapest blocker to running it in production.
+- **`--format json`.** `Result` carried full JSON tags but `--format json` silently rendered a terminal table and exited `0`. The report is an envelope with `version`, `evidence`, a numeric `summary` and the full results. Numbers are carried as numbers — nothing downstream should have to recover a figure by re-parsing the prose that describes it.
+- **`--version`**, which `const version` existed for but nothing read.
+- **Confidence, orthogonal to the verdict.** The verdict says how bad; confidence says how sure. It is discounted by a thin baseline (below `MinSample`), by any abstaining gate, and by a baseline older than 30 days — and is deliberately never folded into the score, so a thin sample cannot look like good health. Adapted from threat-intel-arbiter, where routing keys on the severity/confidence pair.
+- **Evidence validation.** All problems in a file are reported at once, not one run at a time — a collector emitting a malformed file repeats the same mistake on every row. Catches negative volumes, percentages where rates belong, and missing required keys.
 - **Every score explains itself.** Each gate carries the `Contribution` factors that produced it, and `Result.Explanation` is rendered from those same values — so the breakdown always reconciles with the number it explains. The final line restates the arithmetic with the real operands (`1 - (0.34 × 1.00 × 1.00) = 0.66 → DEGRADED`) so it can be checked by hand. Adapted from threat-intel-arbiter's risk engine, with multiplicative factors in place of additive ones because these gates are probabilities.
 - **`PROBE_ERROR` verdict.** A failed measurement no longer masquerades as a detection outage. Previously an unreachable indexer produced `volume: 0` and reported `DEAD:SOURCE` with full confidence — paging an operator about telemetry that may be perfectly healthy.
 - **Over-collection is now scored.** Volume above 3× baseline (`OverThreshold`) reports `DEGRADED`. A lost ingest filter or duplicated pipeline degrades detection through drops, rule timeouts and queue backlog; the ratio was previously clamped to 1.0, so 30× baseline scored a perfect 0.00. It is floored at `DeadThreshold` and can never read `DEAD:SOURCE` — events are demonstrably flowing.
 - **Unknown tally.** Both renderers now report a count of rows that measured nothing (`INSUFFICIENT_DATA`, `PROBE_ERROR`) rather than silently omitting them from the summary.
 
 ### Fixed
+- **Unknown `--format` values are rejected** instead of falling through to text and exiting `0`.
+- **Positional arguments are rejected.** `decay score foo.json` scored `evidence.json` and exited `0`, reporting on a file the user never named.
 - **The healthy ceiling no longer erases the reason.** `MaxHealthyDecay` overwrote the specific per-gate reason with a bare `"decay 0.10 exceeds healthy threshold 0.05"`, so an operator could see that a threshold was crossed but not which gate slipped. It now appends to the gate detail. The README gate table also documented an 80% band that the 0.95 ceiling made unreachable; both now describe the same behaviour.
 - **The FIELD column rendered uncoloured.** `fieldDisplay` returned CSS class names (`dead-field`, `healthy`) that were never keys in the terminal colour map, so the column printed with no styling at all. The map now covers both naming schemes.
 - **`DEAD:FIELD` and `DEGRADED` were indistinguishable in a terminal** — both resolved to `\033[33m`. `amber` is now a distinct 256-colour orange.
@@ -28,6 +37,9 @@ All notable changes to detection-decay.
 - `assertReconciles` asserts every gate value equals the product of the factors its explanation lists, swept across all scoring paths.
 - Property tests replace spot checks: verdicts are monotonic in volume, no `HEALTHY` verdict exists above the ceiling, every verdict has both a colour and a CSS class, and every table row matches the header width.
 - Band boundaries are pinned at exactly `0.20` (exclusive) on both gates.
+- `sortResults` extracted so `TestSortStable` exercises the real comparator; it previously copy-pasted the logic, so the sort could regress with the test still green.
+- The hand-rolled `contains` helper in the test file, which reimplemented `strings.Contains`, was removed — the zero-dependency rule is about the binary, not the standard library.
+- CI now runs on **every branch** (it was scoped to `main`, so feature-branch work was unverified until a PR existed), with `-race`, a gate that fails the build if a `require` block or `go.sum` ever appears, and a gate that fails if `demo/dashboard.html` is stale.
 - Each fix above carries a regression test that was confirmed to fail against the unfixed code.
 
 ## [v0.2.0] — 2026-07-20

@@ -1,10 +1,10 @@
 name: Go
 
 on:
+  # Every branch, not just main — the gates used to run only once a PR existed,
+  # so work on a feature branch was unverified until it was already proposed.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   build:
@@ -21,4 +21,21 @@ jobs:
       - name: Build
         run: go build ./cmd/decay
       - name: Test
-        run: go test ./... -v -count=1
+        run: go test ./... -v -count=1 -race
+      - name: No third-party dependencies
+        # The zero-dependency rule is a hard constraint, not a preference.
+        # Enforce it rather than trusting review to catch a stray require.
+        run: |
+          if grep -q '^require' go.mod || test -f go.sum; then
+            echo "::error::a third-party dependency was added — detection-decay is stdlib-only"
+            exit 1
+          fi
+      - name: Demo dashboard is current
+        # demo/dashboard.html is a committed artifact; a renderer change that
+        # forgets to regenerate it ships docs that contradict the code.
+        run: |
+          go run ./cmd/decay score --evidence evidence.json --format html --out /tmp/dashboard.html
+          diff -u demo/dashboard.html /tmp/dashboard.html || {
+            echo "::error::demo/dashboard.html is stale — regenerate it"
+            exit 1
+          }

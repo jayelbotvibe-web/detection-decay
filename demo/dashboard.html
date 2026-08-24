@@ -10,6 +10,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:monospace;padding:2rem}
 .degraded{color:#d2991d}
 .healthy{color:#3fb950}
 .gray{color:#8b949e}
+.probe-error{color:#a371f7}
 table{width:100%;border-collapse:collapse;margin-top:1rem}
 th,td{padding:0.5rem 0.75rem;text-align:left;border-bottom:1px solid #21262d}
 th{color:#8b949e;font-weight:normal;font-size:0.85rem}
@@ -18,5 +19,5 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 <h1>decay v0.2.0 — detection-decay dashboard</h1>
 <p>evidence: evidence.json</p>
 <div class="worst dead-source">DEAD:SOURCE</div>
-<p>liveness active · volume 0 · field 0% — volume 64→0 (0% of baseline) while agent connected — silent log-collection failure</p>
-</div><table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr><tr><td>win_proc_create.yml / source-death</td><td><span class="healthy">active</span></td><td><span class="dead-source">64→0</span></td><td><span class="gray">N/A</span></td><td>1.00</td><td><span class="dead-source">DEAD:SOURCE</span></td></tr><tr><td>win_proc_create.yml / field-drift</td><td><span class="healthy">active</span></td><td><span class="healthy">234</span></td><td><span class="dead-field">100%→0%</span></td><td>1.00</td><td><span class="dead-field">DEAD:FIELD</span></td></tr><tr><td>win_proc_create.yml / baseline</td><td><span class="healthy">active</span></td><td><span class="healthy">64</span></td><td><span class="healthy">100%</span></td><td>0.00</td><td><span class="healthy">HEALTHY</span></td></tr></table><div class="footer">3 evaluated · 1 healthy · 2 silently decayed<br>A volume-only monitor catches source-death by luck — but MISSES field-drift entirely.</div></body></html>
+<p>liveness active · volume 0 · field n/a — volume 64→0 (0% of baseline) while agent connected — silent log-collection failure</p>
+</div><table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr><tr><td>win_proc_create.yml / source-death</td><td><span class="healthy">active</span></td><td><span class="dead-source">64→0</span></td><td><span class="gray">N/A</span></td><td>1.00</td><td><span class="dead-source">DEAD:SOURCE</span></td></tr><tr><td>win_proc_create.yml / field-drift</td><td><span class="healthy">active</span></td><td><span class="healthy">234</span></td><td><span class="dead-field">100%→0%</span></td><td>1.00</td><td><span class="dead-field">DEAD:FIELD</span></td></tr><tr><td>win_proc_create.yml / baseline</td><td><span class="healthy">active</span></td><td><span class="healthy">64</span></td><td><span class="healthy">100%</span></td><td>0.00</td><td><span class="healthy">HEALTHY</span></td></tr></table><div class="footer">3 evaluated · 1 healthy · 2 silently decayed · 0 unknown<br>A volume-only monitor catches source-death by luck — but MISSES field-drift entirely.</div></body></html>

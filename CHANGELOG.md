@@ -2,6 +2,34 @@
 
 All notable changes to detection-decay.
 
+## [Unreleased]
+
+### Migration note
+- **A sixth verdict, `PROBE_ERROR`, was added.** Anything keyed on exact verdict labels must handle the full set: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`, `PROBE_ERROR`.
+- **Evidence format is backward-compatible.** The new `"probe_error"` key is optional; files without it parse unchanged.
+- **`Result` gained `gates` and `explanation`.** `p_source`, `p_field` and `p_behavior` are retained and now mirror the corresponding gate values. Note `p_field` is `1.0` rather than `0` when the field gate abstains — it previously carried a zero that was never used in the product.
+- **Verdicts change for two input classes:** volume above 3× baseline now reports `DEGRADED` (was `HEALTHY`), and a row carrying `probe_error` reports `PROBE_ERROR` (was `DEAD:SOURCE`).
+
+### Added
+- **Every score explains itself.** Each gate carries the `Contribution` factors that produced it, and `Result.Explanation` is rendered from those same values — so the breakdown always reconciles with the number it explains. The final line restates the arithmetic with the real operands (`1 - (0.34 × 1.00 × 1.00) = 0.66 → DEGRADED`) so it can be checked by hand. Adapted from threat-intel-arbiter's risk engine, with multiplicative factors in place of additive ones because these gates are probabilities.
+- **`PROBE_ERROR` verdict.** A failed measurement no longer masquerades as a detection outage. Previously an unreachable indexer produced `volume: 0` and reported `DEAD:SOURCE` with full confidence — paging an operator about telemetry that may be perfectly healthy.
+- **Over-collection is now scored.** Volume above 3× baseline (`OverThreshold`) reports `DEGRADED`. A lost ingest filter or duplicated pipeline degrades detection through drops, rule timeouts and queue backlog; the ratio was previously clamped to 1.0, so 30× baseline scored a perfect 0.00. It is floored at `DeadThreshold` and can never read `DEAD:SOURCE` — events are demonstrably flowing.
+- **Unknown tally.** Both renderers now report a count of rows that measured nothing (`INSUFFICIENT_DATA`, `PROBE_ERROR`) rather than silently omitting them from the summary.
+
+### Fixed
+- **The healthy ceiling no longer erases the reason.** `MaxHealthyDecay` overwrote the specific per-gate reason with a bare `"decay 0.10 exceeds healthy threshold 0.05"`, so an operator could see that a threshold was crossed but not which gate slipped. It now appends to the gate detail. The README gate table also documented an 80% band that the 0.95 ceiling made unreachable; both now describe the same behaviour.
+- **The FIELD column rendered uncoloured.** `fieldDisplay` returned CSS class names (`dead-field`, `healthy`) that were never keys in the terminal colour map, so the column printed with no styling at all. The map now covers both naming schemes.
+- **`DEAD:FIELD` and `DEGRADED` were indistinguishable in a terminal** — both resolved to `\033[33m`. `amber` is now a distinct 256-colour orange.
+- **The HTML hero fabricated `field 0%` for unmeasured fields.** A `null` measurement was initialised to `0.0` and printed unconditionally — the one guess the scorer is careful never to make. It now reads `n/a`, as does the volume cell for a failed probe.
+- **Table borders never matched cell widths.** The LIVE column reserved 4 characters for `active` (6) and FIELD reserved 5 for `100%→0%` (7), so every row overflowed its column. Widths now agree, and `padRight` measures runes instead of bytes — a non-ASCII rule name previously misaligned the table and could be truncated mid-rune. Over-long names now truncate with an ellipsis.
+- **`heroClass` removed.** It duplicated `verdictCSS` but defaulted an unrecognised verdict to green, the wrong direction to fail.
+
+### Testing
+- `assertReconciles` asserts every gate value equals the product of the factors its explanation lists, swept across all scoring paths.
+- Property tests replace spot checks: verdicts are monotonic in volume, no `HEALTHY` verdict exists above the ceiling, every verdict has both a colour and a CSS class, and every table row matches the header width.
+- Band boundaries are pinned at exactly `0.20` (exclusive) on both gates.
+- Each fix above carries a regression test that was confirmed to fail against the unfixed code.
+
 ## [v0.2.0] — 2026-07-20
 
 ### Migration note

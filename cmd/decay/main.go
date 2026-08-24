@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
@@ -85,6 +86,7 @@ type summary struct {
 	dead      int
 	degraded  int
 	silent    int // dead + degraded
+	unknown   int // insufficient data or failed probe — measured nothing
 	worst     float64
 }
 
@@ -98,6 +100,8 @@ func tally(results []score.Result) summary {
 			s.dead++
 		case score.VDegraded:
 			s.degraded++
+		case score.VInsufficientData, score.VProbeError:
+			s.unknown++
 		}
 		if r.DecayScore > s.worst {
 			s.worst = r.DecayScore
@@ -110,6 +114,10 @@ func tally(results []score.Result) summary {
 // fieldDisplay returns the styled field-column cell for a result.
 // Both renderers use the same banding via PField.
 func fieldDisplay(r score.Result) (text string, badge string) {
+	// A failed probe measured nothing; it must not render as a measurement.
+	if r.ProbeError != "" {
+		return "n/a", "gray"
+	}
 	if r.FieldPopulate == nil {
 		return "N/A", "gray"
 	}
@@ -138,24 +146,10 @@ func verdictCSS(v string) string {
 		return "dead-field"
 	case score.VInsufficientData:
 		return "gray"
+	case score.VProbeError:
+		return "probe-error"
 	default:
 		return "gray"
-	}
-}
-
-// heroClass returns the CSS class for the hero worst-verdict display.
-func heroClass(v string) string {
-	switch v {
-	case score.VDeadSource:
-		return "dead-source"
-	case score.VDeadField:
-		return "dead-field"
-	case score.VDegraded:
-		return "degraded"
-	case score.VInsufficientData:
-		return "gray"
-	default:
-		return "healthy"
 	}
 }
 
@@ -174,31 +168,33 @@ func renderText(evidencePath string, results []score.Result) string {
 	}
 
 	// Table
-	sb.WriteString("┌──────────────────────────────────────┬──────┬────────┬───────┬───────┬────────────────────┐\n")
-	sb.WriteString("│ RULE / STATE                         │ LIVE │ VOLUME │ FIELD │ DECAY │ VERDICT            │\n")
-	sb.WriteString("├──────────────────────────────────────┼──────┼────────┼───────┼───────┼────────────────────┤\n")
+	sb.WriteString("┌──────────────────────────────────────┬────────┬────────┬─────────┬───────┬────────────────────┐\n")
+	sb.WriteString("│ RULE / STATE                         │ LIVE   │ VOLUME │ FIELD   │ DECAY │ VERDICT            │\n")
+	sb.WriteString("├──────────────────────────────────────┼────────┼────────┼─────────┼───────┼────────────────────┤\n")
 
 	for _, r := range results {
 		name := fmt.Sprintf("%s / %s", r.Rule, r.State)
 		namePad := padRight(name, 36)
 
-		live := colour("active", "green")
+		live := padRight(colour("active", "green"), 6)
 		if !strings.EqualFold(r.Liveness, "active") {
-			live = colour(r.Liveness, "red")
+			live = padRight(colour(padRight(r.Liveness, 6), "red"), 6)
 		}
 
-		vol := colour(fmt.Sprintf("%-6d", r.Volume), "green")
-		if r.Volume == 0 {
+		var vol string
+		switch {
+		case r.ProbeError != "":
+			vol = colour(fmt.Sprintf("%-6s", "n/a"), "gray")
+		case r.Volume == 0:
 			vol = colour(fmt.Sprintf("%-6s", fmt.Sprintf("%d→%d", r.BaselineVolume, r.Volume)), "red")
-		} else if r.PSource < score.HealthyThreshold {
+		case r.PSource < score.HealthyThreshold:
 			vol = colour(fmt.Sprintf("%-6d", r.Volume), "yellow")
+		default:
+			vol = colour(fmt.Sprintf("%-6d", r.Volume), "green")
 		}
 
 		fieldStr, fbadge := fieldDisplay(r)
 		fieldCell := colour(fmt.Sprintf("%-7s", fieldStr), fbadge)
-		if fbadge == "gray" {
-			fieldCell = colour(fmt.Sprintf("%-7s", fieldStr), "gray")
-		}
 
 		decay := colour(fmt.Sprintf("%-5.2f", r.DecayScore), verdictColor(r.Verdict))
 		verdict := colour(fmt.Sprintf("%-18s", r.Verdict), verdictColor(r.Verdict))
@@ -207,7 +203,7 @@ func renderText(evidencePath string, results []score.Result) string {
 			namePad, live, vol, fieldCell, decay, verdict))
 	}
 
-	sb.WriteString("└──────────────────────────────────────┴──────┴────────┴───────┴───────┴────────────────────┘\n\n")
+	sb.WriteString("└──────────────────────────────────────┴────────┴────────┴─────────┴───────┴────────────────────┘\n\n")
 
 	// Reason codes
 	sb.WriteString("\033[1mReason codes\033[0m\n")
@@ -222,8 +218,8 @@ func renderText(evidencePath string, results []score.Result) string {
 
 	// Summary
 	s := tally(results)
-	sb.WriteString(fmt.Sprintf("\n\033[1m%d evaluated · %d healthy · %d silently decayed · worst %.2f\033[0m\n",
-		s.evaluated, s.healthy, s.silent, s.worst))
+	sb.WriteString(fmt.Sprintf("\n\033[1m%d evaluated · %d healthy · %d silently decayed · %d unknown · worst %.2f\033[0m\n",
+		s.evaluated, s.healthy, s.silent, s.unknown, s.worst))
 	sb.WriteString("\033[90mA volume-only monitor catches source-death by luck — but MISSES field-drift entirely.\033[0m\n")
 
 	return sb.String()
@@ -245,6 +241,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:monospace;padding:2rem}
 .degraded{color:#d2991d}
 .healthy{color:#3fb950}
 .gray{color:#8b949e}
+.probe-error{color:#a371f7}
 table{width:100%;border-collapse:collapse;margin-top:1rem}
 th,td{padding:0.5rem 0.75rem;text-align:left;border-bottom:1px solid #21262d}
 th{color:#8b949e;font-weight:normal;font-size:0.85rem}
@@ -264,23 +261,28 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 	worst := results[0]
 
 	// Hero
-	hcls := heroClass(worst.Verdict)
-	fieldPct := 0.0
-	if worst.FieldPopulate != nil {
-		fieldPct = *worst.FieldPopulate * 100
+	hcls := verdictCSS(worst.Verdict)
+	// Never print a number for an unmeasured field. Rendering 0% for a null
+	// measurement is exactly the guess the scorer abstains from making.
+	fieldPct, volPct := "n/a", fmt.Sprintf("%d", worst.Volume)
+	if worst.FieldPopulate != nil && worst.ProbeError == "" {
+		fieldPct = fmt.Sprintf("%.0f%%", *worst.FieldPopulate*100)
+	}
+	if worst.ProbeError != "" {
+		volPct = "n/a"
 	}
 	sb.WriteString(fmt.Sprintf(`<div class="hero">
 <h1>decay %s — detection-decay dashboard</h1>
 <p>evidence: %s</p>
 <div class="worst %s">%s</div>
-<p>liveness %s · volume %d · field %.0f%% — %s</p>
+<p>liveness %s · volume %s · field %s — %s</p>
 </div>`,
 		version,
 		html.EscapeString(evidencePath),
 		html.EscapeString(hcls),
 		html.EscapeString(worst.Verdict),
 		html.EscapeString(worst.Liveness),
-		worst.Volume,
+		volPct,
 		fieldPct,
 		html.EscapeString(worst.Reason),
 	))
@@ -293,11 +295,16 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 			live = fmt.Sprintf(`<span class="dead-source">%s</span>`, html.EscapeString(r.Liveness))
 		}
 
-		vol := fmt.Sprintf(`<span class="healthy">%d</span>`, r.Volume)
-		if r.Volume == 0 {
+		var vol string
+		switch {
+		case r.ProbeError != "":
+			vol = `<span class="gray">n/a</span>`
+		case r.Volume == 0:
 			vol = fmt.Sprintf(`<span class="dead-source">%d→%d</span>`, r.BaselineVolume, r.Volume)
-		} else if r.PSource < score.HealthyThreshold {
+		case r.PSource < score.HealthyThreshold:
 			vol = fmt.Sprintf(`<span class="degraded">%d</span>`, r.Volume)
+		default:
+			vol = fmt.Sprintf(`<span class="healthy">%d</span>`, r.Volume)
 		}
 
 		fieldStr, fbadge := fieldDisplay(r)
@@ -317,8 +324,8 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 	sb.WriteString("</table>")
 
 	s := tally(results)
-	sb.WriteString(fmt.Sprintf(`<div class="footer">%d evaluated · %d healthy · %d silently decayed<br>A volume-only monitor catches source-death by luck — but MISSES field-drift entirely.</div>`,
-		s.evaluated, s.healthy, s.silent))
+	sb.WriteString(fmt.Sprintf(`<div class="footer">%d evaluated · %d healthy · %d silently decayed · %d unknown<br>A volume-only monitor catches source-death by luck — but MISSES field-drift entirely.</div>`,
+		s.evaluated, s.healthy, s.silent, s.unknown))
 
 	sb.WriteString("</body></html>")
 	return sb.String()
@@ -340,21 +347,40 @@ func padRight(s string, width int) string {
 		}
 		clean = clean[:start] + clean[start+end+1:]
 	}
-	if len(clean) >= width {
-		return s[:width+len(s)-len(clean)] // approximate
+	n := utf8.RuneCountInString(clean)
+	if n == width {
+		return s
 	}
-	return s + strings.Repeat(" ", width-len(clean))
+	if n > width {
+		if clean != s || width < 1 {
+			return s // coloured: truncating would cut the reset sequence
+		}
+		return string([]rune(s)[:width-1]) + "…"
+	}
+	return s + strings.Repeat(" ", width-n)
 }
 
 func colour(s, c string) string {
+	// Keys cover both the semantic names verdictColor returns and the CSS class
+	// names fieldDisplay/verdictCSS return, so a badge that styles the dashboard
+	// also colours the terminal. Unmapped keys rendered as plain text, which is
+	// why the FIELD column used to print uncoloured.
+	//
+	// amber is a distinct 256-colour orange, not another \033[33m — DEAD:FIELD and
+	// DEGRADED were previously indistinguishable in the terminal.
 	codes := map[string]string{
-		"green":    "\033[32m",
-		"red":      "\033[31m",
-		"yellow":   "\033[33m",
-		"gray":     "\033[90m",
-		"cyan":     "\033[36m",
-		"amber":    "\033[33m",
-		"degraded": "\033[33m",
+		"green":       "\033[32m",
+		"red":         "\033[31m",
+		"yellow":      "\033[33m",
+		"gray":        "\033[90m",
+		"cyan":        "\033[36m",
+		"amber":       "\033[38;5;208m",
+		"magenta":     "\033[35m",
+		"healthy":     "\033[32m",
+		"degraded":    "\033[33m",
+		"dead-source": "\033[31m",
+		"dead-field":  "\033[38;5;208m",
+		"probe-error": "\033[35m",
 	}
 	if code, ok := codes[c]; ok {
 		return code + s + "\033[0m"
@@ -374,6 +400,8 @@ func verdictColor(v string) string {
 		return "amber"
 	case score.VInsufficientData:
 		return "gray"
+	case score.VProbeError:
+		return "magenta"
 	default:
 		return "gray"
 	}

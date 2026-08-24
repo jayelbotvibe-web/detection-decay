@@ -39,11 +39,43 @@ Each gate is checked independently against a healthy baseline:
 
 | Gate | Measurement | Fails when |
 |------|------------|------------|
-| **P(source)** | Agent liveness + event volume | Agent disconnected (dead), volume < 20% of baseline (dead), volume < 80% (degraded) |
+| **P(source)** | Agent liveness + event volume | Agent disconnected (dead), volume < 20% of baseline (dead), < 80% (degraded), > 300% (degraded — over-collection) |
 | **P(field)** | Field populate rate vs baseline | Field populate < 20% of baseline (dead), < 80% (degraded) |
-| **P(behavior)** | Rule match freshness | Deferred in MVP (= 1.0) |
+| **P(behavior)** | Rule match freshness | Not yet modeled — held at 1.0 |
 
-A verdict is assigned per rule-state pair: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, or `INSUFFICIENT_DATA`.
+**The healthy ceiling is the binding constraint.** Gates multiply, so a row needs
+`P(source) × P(field) × P(behavior) ≥ 0.95` to read `HEALTHY` — not merely every gate above
+the 80% band. Two gates at 90% compound to a decay of 0.19 and report `DEGRADED`, naming
+both measurements in the reason.
+
+**Over-collection is a failure mode too.** Volume between 1× and 3× baseline is ordinary
+variance. Beyond 3×, a lost ingest filter or a duplicated pipeline is degrading detection
+through drops, rule timeouts and alert-queue backlog — so it scores as decay rather than as
+perfect health. It never reads as `DEAD:SOURCE`: events are demonstrably flowing.
+
+A verdict is assigned per rule-state pair: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`,
+`DEAD:FIELD`, `INSUFFICIENT_DATA`, or `PROBE_ERROR`.
+
+**`PROBE_ERROR` is not an outage.** If the measurement itself failed — indexer unreachable,
+query rejected — the row reports `PROBE_ERROR` and no decay, because a zero you could not
+measure is not a zero you observed. Reporting that as `DEAD:SOURCE` would page an operator
+about telemetry that may be perfectly healthy.
+
+### Every score explains itself
+
+Each gate carries the contributions that produced it, and the explanation is rendered from
+those same values — so the breakdown always reconciles with the number it explains:
+
+```text
+P(source): 0.34
+  • volume 22 vs baseline 64 = 34% of baseline (×0.34)
+P(field): 1.00
+  • data.win.eventdata.image populate 100% vs baseline 100% = 100% of baseline (×1.00)
+P(behavior): 1.00
+  • rule-match freshness not yet modeled — gate held at 1.0 (×1.00)
+
+DecayScore: 1 - (0.34 × 1.00 × 1.00) = 0.66 → DEGRADED
+```
 
 ## Demonstrated failure modes
 
@@ -133,7 +165,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 
 ## Roadmap
 
-- [x] **Live mode** (`--live`) — poll Wazuh APIs directly (shipped on `feat/live-mode` branch; pending merge)
+- [ ] **Live mode** (`--live`) — poll the indexer directly. Prototyped on `feat/live-mode`, but that branch forked before v0.2.0 and is not merge-ready; being reimplemented on `main` with no third-party dependencies
 - [ ] **P(behavior) gate** — rule match freshness scoring (time since last alert match)
 - [ ] **Multi-rule scope** — calibrate across full Sigma rule sets, not just `win_proc_create.yml`
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected

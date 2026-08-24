@@ -250,6 +250,29 @@ a stale baseline makes a verdict less certain, it does not make decay worse.
 > calibrated only from weekday traffic will still read a quiet Sunday as degraded. Size the
 > window to cover a full cycle.
 
+### Browsing the history
+
+```bash
+./decay serve --history ./decay-history        # http://127.0.0.1:8788
+```
+
+A single self-contained page, embedded in the binary, over a **read-only GET-only** JSON
+API (`/api/health`, `/api/history`, `/api/runs/latest`, `/api/runs/{id}`). It shows the decay
+trend, the latest run, and — clicking any row — that row's full gate breakdown, the same
+explanation the CLI prints.
+
+It **binds to loopback only** unless you pass `--allow-remote`. There is no authentication,
+and the page is a map of exactly where an estate's detection is blind; exposing that is a
+decision to make deliberately.
+
+Two things it refuses to do quietly:
+
+- **A run that measured nothing renders no verdict at all.** Not a green board built on zero
+  measurements — a notice saying no verdict was established.
+- **A stale board announces itself.** Untrustworthy runs are not indexed, so the newest
+  *attempt* can be newer than the newest trusted run. If the last attempt measured nothing,
+  the page says so instead of showing an hours-old healthy board as though it were current.
+
 ### Wiring it into a scheduler
 
 `--fail-on` makes the exit code carry the finding, so cron or CI can act on it:
@@ -332,6 +355,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 - [x] **Derive fields from Sigma** — `scripts/sigma-to-rules.py` extracts the required fields, logsource and ATT&CK tags from a rule set
 - [ ] **Multi-rule collection** — sweep a whole `rules.json` in one pass instead of one rule per invocation
 - [x] **Run history and trend index** (`--history`) — persist each run, report what changed since the last one
+- [x] **Local dashboard** (`decay serve`) — browse the trend and per-run gate breakdowns
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected
 - [x] **Rolling baseline calibration** (`decay calibrate`) — derive baselines from recorded history, using only healthy observations
 - [ ] **Seasonality-aware baselines** — bucket by time-of-day and day-of-week instead of a flat median

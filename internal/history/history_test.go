@@ -239,3 +239,49 @@ func TestEntriesOrderAcrossSeconds(t *testing.T) {
 		}
 	}
 }
+
+// TestRunIDsIncludesUnindexed: the index excludes runs that measured nothing, so
+// callers need a way to see the newest attempt regardless.
+func TestRunIDsIncludesUnindexed(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Save("20260824T164500Z", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(Entry{ID: "20260824T164500Z"}); err != nil {
+		t.Fatal(err)
+	}
+	// Saved but deliberately not indexed.
+	if _, err := s.Save("20260824T170000Z", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := s.RunIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("RunIDs = %v, want both runs", ids)
+	}
+	latest, err := s.LatestRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != "20260824T170000Z" {
+		t.Errorf("LatestRunID = %q, want the unindexed newer run", latest)
+	}
+	// The index must still not contain it.
+	if e, _ := s.Latest(); e == nil || e.ID != "20260824T164500Z" {
+		t.Error("an unindexed run leaked into the index")
+	}
+}
+
+func TestRunIDsEmptyStore(t *testing.T) {
+	s := newStore(t)
+	ids, err := s.RunIDs()
+	if err != nil || len(ids) != 0 {
+		t.Errorf("RunIDs on empty store = %v, %v", ids, err)
+	}
+	if id, err := s.LatestRunID(); err != nil || id != "" {
+		t.Errorf("LatestRunID on empty store = %q, %v", id, err)
+	}
+}

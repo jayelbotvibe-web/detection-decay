@@ -56,8 +56,13 @@ absence of dependencies is a feature of this tool.
   observation makes a rolling baseline follow a dead source down until the outage reads
   healthy — silent, permanent, and worse than no calibration. `TestRatchetGuard` pins it.
   Baselines are medians, not means.
+- `internal/server/server.go` + `internal/server/web/index.html` — read-only dashboard,
+  `//go:embed`. Read-only by construction: every route is wrapped in `get()`, which 405s
+  anything else. Handlers do **no** id sanitising of their own — `history.Store` owns that
+  decision, so there is one place that defines a valid run id. Loopback-only unless
+  `-allow-remote`.
 - `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`,
-  `internal/calibrate/calibrate_test.go`
+  `internal/calibrate/calibrate_test.go`, `internal/server/server_test.go`
 - `scripts/collect-opensearch.sh` — reference evidence collector for
   OpenSearch/Wazuh/Elasticsearch. Still one rule per invocation.
 - `scripts/sigma-to-rules.py` + `scripts/fieldmap-wazuh.json` — derive a rules file from

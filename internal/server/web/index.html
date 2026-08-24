@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>decay — detection health</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#11161d; --line:#21262d; --edge:#30363d;
+  --fg:#c9d1d9; --dim:#8b949e; --link:#58a6ff;
+  --healthy:#3fb950; --degraded:#d2991d; --dead-source:#f85149;
+  --dead-field:#f0883e; --gray:#8b949e; --probe-error:#a371f7;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:1.5rem}
+h1{font-size:1.05rem;color:var(--link);font-weight:600}
+h2{font-size:.8rem;color:var(--dim);font-weight:400;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.6rem}
+.wrap{max-width:1100px;margin:0 auto}
+header{display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;margin-bottom:1.25rem}
+header .meta{color:var(--dim);font-size:.8rem}
+.panel{background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:1.1rem;margin-bottom:1.1rem}
+.hero{display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap}
+.hero .verdict{font-size:1.9rem;font-weight:700;letter-spacing:-.02em}
+.hero .facts{color:var(--dim);font-size:.82rem}
+.notice{border-left:3px solid var(--probe-error);padding:.7rem .9rem;background:rgba(163,113,247,.09);border-radius:3px}
+.notice strong{color:var(--probe-error)}
+.warn{border-left:3px solid var(--degraded);padding:.7rem .9rem;background:rgba(210,153,29,.09);border-radius:3px;margin-bottom:1.1rem}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-weight:400;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em}
+tbody tr{cursor:pointer;border-left:3px solid transparent}
+tbody tr:hover{background:rgba(255,255,255,.032)}
+tbody tr[aria-expanded="true"]{border-left-color:var(--sev,var(--gray));background:rgba(255,255,255,.045)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.v{color:var(--sev,var(--gray));font-weight:600}
+.bar{height:4px;background:var(--line);border-radius:2px;overflow:hidden;min-width:56px}
+.bar i{display:block;height:100%;background:var(--sev,var(--gray))}
+.exp{white-space:pre-wrap;color:var(--dim);font-size:.79rem;padding:.7rem .9rem;background:var(--bg);border:1px solid var(--line);border-radius:4px;margin:.2rem 0 .5rem}
+.scroll{overflow-x:auto}
+.spark{display:block;width:100%;height:64px}
+.spark .axis{stroke:var(--line);stroke-width:1}
+.spark .fill{fill:rgba(248,81,73,.13)}
+.spark .stroke{fill:none;stroke:var(--dead-source);stroke-width:1.5;stroke-linejoin:round}
+.spark circle{fill:var(--dead-source)}
+.legend{display:flex;justify-content:space-between;color:var(--dim);font-size:.72rem;margin-top:.35rem}
+.empty{color:var(--dim);padding:1.4rem 0;text-align:center}
+footer{color:var(--dim);font-size:.74rem;margin-top:1.4rem;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>decay</h1>
+    <span class="meta" id="meta">loading…</span>
+  </header>
+  <div id="app"><div class="empty">loading…</div></div>
+  <footer>read-only view of recorded runs · a volume-only monitor catches source-death by luck, but misses field-drift entirely</footer>
+</div>
+
+<script>
+"use strict";
+
+const SEV = {
+  "HEALTHY":"var(--healthy)", "DEGRADED":"var(--degraded)",
+  "DEAD:SOURCE":"var(--dead-source)", "DEAD:FIELD":"var(--dead-field)",
+  "INSUFFICIENT_DATA":"var(--gray)", "PROBE_ERROR":"var(--probe-error)",
+};
+const sev = v => SEV[v] || "var(--gray)";
+
+// Every value from a run artifact is written with textContent, never innerHTML.
+// Rule names come from a SIEM index and are not trusted input.
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+
+async function getJSON(url) {
+  const r = await fetch(url, {headers:{"Accept":"application/json"}});
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
+  return r.json();
+}
+
+function sparkline(entries) {
+  const NS = "http://www.w3.org/2000/svg";
+  const w = 1000, h = 64, pad = 4;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+
+  const base = document.createElementNS(NS, "line");
+  base.setAttribute("class","axis");
+  base.setAttribute("x1",0); base.setAttribute("x2",w);
+  base.setAttribute("y1",h-pad); base.setAttribute("y2",h-pad);
+  svg.appendChild(base);
+
+  const n = entries.length;
+  const x = i => n === 1 ? w/2 : pad + i*(w-2*pad)/(n-1);
+  // Decay is already 0..1, so the axis is fixed rather than fitted. A trend that
+  // rescales itself makes a flat healthy line look like turbulence.
+  const y = d => pad + (1 - Math.max(0, Math.min(1, d))) * (h - 2*pad);
+
+  const pts = entries.map((e,i) => `${x(i).toFixed(1)},${y(e.worst_decay).toFixed(1)}`);
+  const fill = document.createElementNS(NS, "path");
+  fill.setAttribute("class","fill");
+  fill.setAttribute("d", `M${x(0).toFixed(1)},${h-pad} L${pts.join(" L")} L${x(n-1).toFixed(1)},${h-pad} Z`);
+  svg.appendChild(fill);
+
+  const line = document.createElementNS(NS, "path");
+  line.setAttribute("class","stroke");
+  line.setAttribute("d", `M${pts.join(" L")}`);
+  svg.appendChild(line);
+
+  const last = document.createElementNS(NS, "circle");
+  last.setAttribute("cx", x(n-1)); last.setAttribute("cy", y(entries[n-1].worst_decay));
+  last.setAttribute("r", 3.5);
+  svg.appendChild(last);
+
+  entries.forEach((e,i) => {
+    const hit = document.createElementNS(NS, "rect");
+    hit.setAttribute("x", x(i) - (w/n)/2); hit.setAttribute("y", 0);
+    hit.setAttribute("width", w/n); hit.setAttribute("height", h);
+    hit.setAttribute("fill", "transparent");
+    const t = document.createElementNS(NS, "title");
+    t.textContent = `${e.id}\nworst ${Number(e.worst_decay).toFixed(2)} ${e.worst_verdict}\n${e.healthy}/${e.evaluated} healthy, ${e.unknown} unknown`;
+    hit.appendChild(t);
+    svg.appendChild(hit);
+  });
+  return svg;
+}
+
+function renderTrend(entries) {
+  const p = el("div","panel");
+  p.appendChild(el("h2", null, `decay trend · ${entries.length} run${entries.length===1?"":"s"}`));
+  if (!entries.length) { p.appendChild(el("div","empty","no runs recorded yet — score with --history")); return p; }
+  p.appendChild(sparkline(entries));
+  const lg = el("div","legend");
+  lg.appendChild(el("span", null, entries[0].id));
+  lg.appendChild(el("span", null, "worst decay · 0.00 bottom, 1.00 top"));
+  lg.appendChild(el("span", null, entries[entries.length-1].id));
+  p.appendChild(lg);
+  return p;
+}
+
+function renderHero(run, entry) {
+  const s = run.summary || {};
+  const p = el("div","panel");
+  const hero = el("div","hero");
+
+  // Fail closed. If nothing in the run produced a usable measurement, no verdict
+  // is rendered at all — a green board built on zero measurements is the exact
+  // false reassurance this tool exists to prevent.
+  if (s.evaluated > 0 && s.unknown === s.evaluated) {
+    const n = el("div","notice");
+    n.appendChild(el("strong", null, "This run measured nothing."));
+    n.appendChild(el("div", null,
+      `All ${s.evaluated} row(s) reported ${s.worst_verdict || "no measurement"}. `
+      + "No detection-health verdict is shown, because none was established."));
+    p.appendChild(el("h2", null, `latest run · ${entry ? entry.id : ""}`));
+    p.appendChild(n);
+    return p;
+  }
+
+  const v = el("div","verdict", s.worst_verdict || "NO DATA");
+  v.style.setProperty("--sev", sev(s.worst_verdict));
+  v.classList.add("v");
+  hero.appendChild(v);
+
+  const facts = el("div","facts");
+  facts.appendChild(el("div", null,
+    `${s.evaluated||0} evaluated · ${s.healthy||0} healthy · ${s.silent||0} silently decayed · ${s.unknown||0} unknown`));
+  facts.appendChild(el("div", null, `worst decay ${Number(s.worst_decay||0).toFixed(2)} · evidence ${run.evidence||"?"}`));
+  hero.appendChild(facts);
+
+  p.appendChild(el("h2", null, `latest run · ${entry ? entry.id : ""}`));
+  p.appendChild(hero);
+
+  const ch = run.changes;
+  if (ch) {
+    const lines = [];
+    (ch.changed||[]).forEach(l => lines.push("~ " + l));
+    (ch.new||[]).forEach(l => lines.push("+ " + l));
+    (ch.removed||[]).forEach(l => lines.push("- " + l));
+    const box = el("div","exp", lines.length
+      ? `Changes since ${ch.previous_run}\n` + lines.join("\n") + `\n${ch.unchanged} unchanged`
+      : `Changes since ${ch.previous_run}\nnothing changed · ${ch.unchanged} unchanged`);
+    p.appendChild(box);
+  }
+  return p;
+}
+
+function renderRows(run) {
+  const p = el("div","panel");
+  p.appendChild(el("h2", null, "rules"));
+  const rows = run.results || [];
+  if (!rows.length) { p.appendChild(el("div","empty","this run scored no rules")); return p; }
+
+  const scroll = el("div","scroll");
+  const t = el("table");
+  const thead = el("thead"), hr = el("tr");
+  ["rule / state","live","volume","field","decay","","verdict","confidence"].forEach(h => hr.appendChild(el("th",null,h)));
+  thead.appendChild(hr); t.appendChild(thead);
+
+  const tb = el("tbody");
+  rows.forEach(r => {
+    const tr = el("tr");
+    tr.style.setProperty("--sev", sev(r.verdict));
+    tr.setAttribute("aria-expanded","false");
+    tr.tabIndex = 0;
+
+    tr.appendChild(el("td", null, `${r.rule} / ${r.state}`));
+    tr.appendChild(el("td", null, r.liveness || "—"));
+    tr.appendChild(el("td","num", r.probe_error ? "n/a" : r.volume));
+    tr.appendChild(el("td","num",
+      r.probe_error || r.field_populate === null || r.field_populate === undefined
+        ? "n/a" : (r.field_populate*100).toFixed(0) + "%"));
+    tr.appendChild(el("td","num", Number(r.decay_score).toFixed(2)));
+
+    const bcell = el("td"); const bar = el("div","bar"); const i = el("i");
+    i.style.width = Math.round(Math.max(0,Math.min(1,r.decay_score))*100) + "%";
+    bar.appendChild(i); bcell.appendChild(bar); tr.appendChild(bcell);
+
+    tr.appendChild(el("td","v", r.verdict));
+    tr.appendChild(el("td", null, `${r.confidence_label||"—"} ${Number(r.confidence_score||0).toFixed(2)}`));
+    tb.appendChild(tr);
+
+    // The explanation is the payoff of a self-explaining score: the breakdown
+    // shown here is rendered from the same values that produced the number.
+    const drawer = el("tr"); drawer.style.display = "none";
+    const cell = el("td"); cell.colSpan = 8;
+    cell.appendChild(el("div","exp", r.explanation || r.reason || ""));
+    drawer.appendChild(cell); tb.appendChild(drawer);
+
+    const toggle = () => {
+      const open = drawer.style.display !== "none";
+      drawer.style.display = open ? "none" : "table-row";
+      tr.setAttribute("aria-expanded", String(!open));
+    };
+    tr.addEventListener("click", toggle);
+    tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  });
+  t.appendChild(tb); scroll.appendChild(t); p.appendChild(scroll);
+  return p;
+}
+
+async function main() {
+  const app = document.getElementById("app");
+  const meta = document.getElementById("meta");
+  app.textContent = "";
+
+  let hist;
+  try { hist = await getJSON("/api/history"); }
+  catch (e) { app.appendChild(el("div","warn", "cannot read history: " + e.message)); return; }
+
+  const entries = hist.entries || [];
+  if (hist.warning) app.appendChild(el("div","warn", hist.warning));
+
+  // A run that measured nothing is saved but never indexed, so the newest
+  // attempt can be far newer than the newest trusted run. Showing the trusted
+  // one as though it were current is exactly the stale-green-board failure this
+  // tool exists to catch, so say so loudly.
+  if (hist.latest_attempt && hist.latest_attempt_indexed === false) {
+    const w = el("div","warn");
+    w.appendChild(el("strong", null, "The most recent run measured nothing."));
+    w.appendChild(el("div", null,
+      `Run ${hist.latest_attempt} was recorded but not indexed, because no probe in it `
+      + `produced a usable measurement. Everything below is the last run that did`
+      + (entries.length ? ` (${entries[entries.length-1].id})` : "")
+      + " — it may no longer reflect reality."));
+    app.appendChild(w);
+  }
+
+  meta.textContent = entries.length
+    ? `${entries.length} run${entries.length===1?"":"s"} · latest ${entries[entries.length-1].generated_at||""}`
+    : "no runs recorded";
+
+  app.appendChild(renderTrend(entries));
+  if (!entries.length) return;
+
+  let run;
+  try { run = await getJSON("/api/runs/latest"); }
+  catch (e) { app.appendChild(el("div","warn","cannot read the latest run: " + e.message)); return; }
+
+  app.appendChild(renderHero(run, entries[entries.length-1]));
+  app.appendChild(renderRows(run));
+}
+
+main();
+setInterval(main, 30000);
+</script>
+</body>
+</html>

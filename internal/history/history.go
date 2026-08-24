@@ -219,3 +219,42 @@ func (s *Store) Append(e Entry) error {
 	}
 	return nil
 }
+
+// RunIDs lists every run artifact on disk, oldest first — including runs that
+// were never indexed because they measured nothing.
+//
+// The index deliberately excludes untrustworthy runs, which means the newest
+// indexed run can be hours older than the newest attempt. A caller showing the
+// latest indexed run needs to know that, or it displays a stale healthy board
+// while every probe since has been failing — the same false reassurance this
+// tool exists to prevent.
+func (s *Store) RunIDs() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.Dir, "runs"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read runs: %w", err)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := s.runDir(e.Name()); err != nil {
+			continue // not a run id we would ever have written
+		}
+		ids = append(ids, e.Name())
+	}
+	sort.SliceStable(ids, func(i, j int) bool { return lessID(ids[i], ids[j]) })
+	return ids, nil
+}
+
+// LatestRunID returns the newest run artifact on disk, indexed or not.
+func (s *Store) LatestRunID() (string, error) {
+	ids, err := s.RunIDs()
+	if err != nil || len(ids) == 0 {
+		return "", err
+	}
+	return ids[len(ids)-1], nil
+}

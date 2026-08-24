@@ -16,6 +16,7 @@ import (
 	"github.com/jayelbotvibe-web/detection-decay/internal/calibrate"
 	"github.com/jayelbotvibe-web/detection-decay/internal/history"
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
+	"github.com/jayelbotvibe-web/detection-decay/internal/server"
 )
 
 const version = "v0.2.0"
@@ -35,6 +36,9 @@ func main() {
 	switch {
 	case len(args) == 0:
 		// defaults
+	case args[0] == "serve":
+		runServe(args[1:])
+		return
 	case args[0] == "calibrate":
 		runCalibrate(args[1:])
 		return
@@ -154,6 +158,7 @@ const usage = `usage: decay [score] [-evidence file] [-format text|html|json] [-
              [-fail-on none|degraded|dead|unknown] [-history dir]
              [-baselines file] [-version]
        decay calibrate -history dir [-out file] [-window N] [-min-samples N]
+       decay serve -history dir [-addr host:port] [-allow-remote]
 `
 
 // Verdict severity ranks, used only by --fail-on.
@@ -873,6 +878,38 @@ func runCalibrate(args []string) {
 	// No baselines is not a crash, but it is not success either: scoring against
 	// this file would report INSUFFICIENT_DATA for everything.
 	if len(f.Baselines) == 0 {
+		os.Exit(exitIO)
+	}
+}
+
+// ---------- serve ----------
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	historyDir := fs.String("history", "", "run history directory (required)")
+	addr := fs.String("addr", "127.0.0.1:8788", "listen address")
+	allowRemote := fs.Bool("allow-remote", false, "permit binding beyond loopback")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(exitUsage)
+	}
+	if *historyDir == "" {
+		fmt.Fprintf(os.Stderr, "serve: -history is required\n%s", usage)
+		os.Exit(exitUsage)
+	}
+
+	// Binding beyond loopback publishes a map of exactly where this estate's
+	// detection is blind. That is an explicit decision, not a default.
+	if !server.IsLoopback(*addr) && !*allowRemote {
+		fmt.Fprintf(os.Stderr,
+			"refusing to bind %s: this would expose recorded detection gaps to the network,\n"+
+				"and the server has no authentication. Pass -allow-remote if that is intended.\n", *addr)
+		os.Exit(exitUsage)
+	}
+
+	srv := server.New(&history.Store{Dir: *historyDir})
+	fmt.Fprintln(os.Stderr, srv.Describe(*addr))
+	if err := srv.ListenAndServe(*addr); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(exitIO)
 	}
 }

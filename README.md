@@ -215,6 +215,41 @@ Storage is plain JSON files, no database. Two behaviours worth knowing:
   scoring, and refusing to run until someone hand-repairs a JSON file is the wrong trade for
   a monitoring tool.
 
+### Deriving baselines from history
+
+A hand-written baseline never revisited makes every seasonal trough look like decay: a rule
+firing 3000 times on a Tuesday afternoon and 400 times at 3am Sunday reports `DEGRADED`
+every weekend. Once runs are recorded, derive the baselines instead:
+
+```bash
+./decay calibrate --history ./decay-history --out baselines.json
+./decay score --evidence evidence-live.json --baselines baselines.json
+```
+
+**Only observations that were themselves `HEALTHY` contribute.** This is the load-bearing
+rule. A rolling baseline computed from every observation follows a dead source down — within
+a few runs the baseline reaches zero and a total outage reports perfectly healthy. That
+failure is silent and permanent, which makes it worse than having no calibration at all:
+
+```text
+5 healthy runs at 3000 events, then 50 consecutive runs at 0
+  →  baseline stays 3000, derived from the 5 healthy observations
+```
+
+Baselines are the **median** of the window, not the mean: one outlier run must not move the
+baseline, and outliers are what a decaying pipeline produces. An entity with fewer than
+`--min-samples` healthy observations is omitted entirely — a baseline derived from one
+observation is just that observation.
+
+An explicit `baseline_volume` in the evidence file always wins; a derived number is a
+convenience, and silently overriding a figure written by hand would make the score
+untraceable to its input. The baselines file's age flows into **confidence**, not the score:
+a stale baseline makes a verdict less certain, it does not make decay worse.
+
+> Seasonality is not modelled. The window is a flat median over recent runs, so a baseline
+> calibrated only from weekday traffic will still read a quiet Sunday as degraded. Size the
+> window to cover a full cycle.
+
 ### Wiring it into a scheduler
 
 `--fail-on` makes the exit code carry the finding, so cron or CI can act on it:
@@ -298,7 +333,8 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 - [ ] **Multi-rule collection** — sweep a whole `rules.json` in one pass instead of one rule per invocation
 - [x] **Run history and trend index** (`--history`) — persist each run, report what changed since the last one
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected
-- [ ] **Rolling baseline calibration** — derive baselines from recorded history instead of a hand-written file
+- [x] **Rolling baseline calibration** (`decay calibrate`) — derive baselines from recorded history, using only healthy observations
+- [ ] **Seasonality-aware baselines** — bucket by time-of-day and day-of-week instead of a flat median
 - [ ] **Positive control** — push a known-good event through the pipeline and mark the run inconclusive if it does not land
 - [ ] **Closed calibration loop** — run probes, score results, feed back into baseline
 
@@ -307,7 +343,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 - **Evidence-driven**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
 - **P(behavior) deferred**: alert freshness not yet modeled — the gate is held at 1.0 and says so in every explanation.
 - **Single-rule scope in the collector**: `scripts/sigma-to-rules.py` derives the fields for a whole rule set, but `scripts/collect-opensearch.sh` still measures one rule per invocation — nothing yet consumes `rules.json` to sweep them.
-- **Hand-maintained baselines**: `--history` records runs, but nothing yet derives a rolling baseline from them, so a fixed baseline will read a quiet weekend as `DEGRADED`. Set `baseline_age_seconds` so at least the confidence reflects it.
+- **No seasonality model**: `decay calibrate` takes a flat median over a window of recent runs. It has no notion of time-of-day or day-of-week, so a window that does not span a full traffic cycle will still misread the quiet part of it.
 - **No positive control**: the scorer trusts that a measurement of zero means zero. Set `probe_error` when your collector knows better.
 
 ⭐ **Star this repo** if you've hit silent detection decay in production. [Issues](https://github.com/jayelbotvibe-web/detection-decay/issues) and PRs welcome.

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -135,8 +136,38 @@ func (s *Store) Entries() ([]Entry, error) {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, fmt.Errorf("index at %s is unreadable (%v) — it will be rebuilt from this run on", s.indexPath(), err)
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	sort.SliceStable(entries, func(i, j int) bool { return lessID(entries[i].ID, entries[j].ID) })
 	return entries, nil
+}
+
+// splitID separates a run id into its timestamp and its collision suffix:
+// "20260824T164500Z-10" becomes ("20260824T164500Z", 10). An id with no suffix
+// is ordinal 1, since it is the first run of that second.
+func splitID(id string) (string, int) {
+	i := strings.LastIndex(id, "-")
+	if i < 0 {
+		return id, 1
+	}
+	n, err := strconv.Atoi(id[i+1:])
+	if err != nil || n < 2 {
+		return id, 1
+	}
+	return id[:i], n
+}
+
+// lessID orders run ids chronologically.
+//
+// A plain string comparison is wrong: suffixes run -2, -3 ... -10, -11, and
+// lexicographically "Z-10" sorts before "Z-2". That silently mis-orders the
+// index once ten runs land in the same second, so Latest returns the wrong run
+// and the run-over-run diff compares against the wrong baseline.
+func lessID(a, b string) bool {
+	ab, an := splitID(a)
+	bb, bn := splitID(b)
+	if ab != bb {
+		return ab < bb // timestamps sort correctly as strings
+	}
+	return an < bn
 }
 
 // Latest returns the most recently indexed run, or nil if there is none.

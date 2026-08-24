@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jayelbotvibe-web/detection-decay/internal/calibrate"
 	"github.com/jayelbotvibe-web/detection-decay/internal/history"
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
@@ -27,12 +28,16 @@ func main() {
 	failOn := scoreCmd.String("fail-on", "none", "exit "+fmt.Sprint(exitDecay)+" when any row is at or worse than: none, degraded, dead, unknown")
 	showVersion := scoreCmd.Bool("version", false, "print version and exit")
 	historyDir := scoreCmd.String("history", "", "directory to persist runs and the trend index")
+	baselinePath := scoreCmd.String("baselines", "", "baselines file from `decay calibrate`, used for rows carrying none")
 
 	// Accept both `decay score [flags]` and `decay [flags]`.
 	args := os.Args[1:]
 	switch {
 	case len(args) == 0:
 		// defaults
+	case args[0] == "calibrate":
+		runCalibrate(args[1:])
+		return
 	case args[0] == "score":
 		args = args[1:]
 	case strings.HasPrefix(args[0], "-"):
@@ -78,6 +83,10 @@ func main() {
 	if err := dec.Decode(&evs); err != nil {
 		fmt.Fprintf(os.Stderr, "error parsing evidence: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *baselinePath != "" {
+		evs = applyBaselines(*baselinePath, evs)
 	}
 
 	if errs := score.Validate(evs); len(errs) > 0 {
@@ -142,7 +151,9 @@ const (
 )
 
 const usage = `usage: decay [score] [-evidence file] [-format text|html|json] [-out file]
-             [-fail-on none|degraded|dead|unknown] [-version]
+             [-fail-on none|degraded|dead|unknown] [-history dir]
+             [-baselines file] [-version]
+       decay calibrate -history dir [-out file] [-window N] [-min-samples N]
 `
 
 // Verdict severity ranks, used only by --fail-on.
@@ -772,4 +783,96 @@ func renderChanges(ch *changes) string {
 	}
 	sb.WriteString(colour(fmt.Sprintf("  %d unchanged\n", ch.Unchanged), "gray"))
 	return sb.String()
+}
+
+// ---------- calibration ----------
+
+// applyBaselines fills in baselines for rows that carry none. A missing or
+// unreadable baselines file is fatal: the operator asked for derived baselines,
+// and silently scoring without them would produce a table of INSUFFICIENT_DATA
+// that looks like a telemetry problem rather than a missing file.
+func applyBaselines(path string, evs []score.Evidence) []score.Evidence {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading baselines: %v\n", err)
+		os.Exit(exitIO)
+	}
+	var f calibrate.File
+	if err := json.Unmarshal(data, &f); err != nil {
+		fmt.Fprintf(os.Stderr, "error parsing baselines: %v\n", err)
+		os.Exit(exitIO)
+	}
+	out, warnings := calibrate.Apply(evs, f, time.Now())
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+	return out
+}
+
+func runCalibrate(args []string) {
+	fs := flag.NewFlagSet("calibrate", flag.ExitOnError)
+	historyDir := fs.String("history", "", "run history directory (required)")
+	outPath := fs.String("out", "baselines.json", "output path, or - for stdout")
+	window := fs.Int("window", 30, "consider at most this many recent runs")
+	minSamples := fs.Int("min-samples", 3, "healthy observations required before a baseline is published")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(exitUsage)
+	}
+	if *historyDir == "" {
+		fmt.Fprintf(os.Stderr, "calibrate: -history is required\n%s", usage)
+		os.Exit(exitUsage)
+	}
+	if *minSamples < 1 {
+		fmt.Fprintf(os.Stderr, "calibrate: -min-samples must be at least 1\n")
+		os.Exit(exitUsage)
+	}
+
+	store := &history.Store{Dir: *historyDir}
+	entries, err := store.Entries()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading history: %v\n", err)
+		os.Exit(exitIO)
+	}
+	if len(entries) == 0 {
+		fmt.Fprintf(os.Stderr, "error: no runs in %s — score with -history first\n", *historyDir)
+		os.Exit(exitIO)
+	}
+
+	runs := make([][]byte, 0, len(entries))
+	for _, e := range entries {
+		data, err := store.LoadRun(e.ID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping run %s: %v\n", e.ID, err)
+			continue
+		}
+		runs = append(runs, data)
+	}
+
+	f, warnings := calibrate.Derive(runs, *window, *minSamples, time.Now())
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+
+	out, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding baselines: %v\n", err)
+		os.Exit(exitIO)
+	}
+	out = append(out, '\n')
+
+	if *outPath == "-" {
+		os.Stdout.Write(out)
+	} else if err := os.WriteFile(*outPath, out, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *outPath, err)
+		os.Exit(exitIO)
+	} else {
+		fmt.Fprintf(os.Stderr, "derived %d baseline(s) from %d run(s) → %s\n",
+			len(f.Baselines), len(runs), *outPath)
+	}
+
+	// No baselines is not a crash, but it is not success either: scoring against
+	// this file would report INSUFFICIENT_DATA for everything.
+	if len(f.Baselines) == 0 {
+		os.Exit(exitIO)
+	}
 }

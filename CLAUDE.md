@@ -51,7 +51,13 @@ absence of dependencies is a feature of this tool.
   Two deliberate behaviours — a run that measured nothing is saved but **not** indexed, and
   a corrupt index is rebuilt rather than fatal. `runDir` verifies path containment *after*
   joining; the id regex alone accepts `..`.
-- `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`
+- `internal/calibrate/calibrate.go` — derives baselines from history. **Only `HEALTHY`
+  observations contribute**; that is the whole point of the package. Calibrating from every
+  observation makes a rolling baseline follow a dead source down until the outage reads
+  healthy — silent, permanent, and worse than no calibration. `TestRatchetGuard` pins it.
+  Baselines are medians, not means.
+- `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`,
+  `internal/calibrate/calibrate_test.go`
 - `scripts/collect-opensearch.sh` — reference evidence collector for
   OpenSearch/Wazuh/Elasticsearch. Still one rule per invocation.
 - `scripts/sigma-to-rules.py` + `scripts/fieldmap-wazuh.json` — derive a rules file from

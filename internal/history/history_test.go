@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,62 @@ func TestAppendLeavesNoTempFiles(t *testing.T) {
 	for _, f := range files {
 		if strings.HasPrefix(f.Name(), ".history-") {
 			t.Errorf("left a temp file behind: %s", f.Name())
+		}
+	}
+}
+
+// TestEntriesOrderedChronologically guards the collision-suffix ordering.
+// A plain string sort puts "Z-10" before "Z-2", which silently mis-orders the
+// index once ten runs land in the same second — Latest then returns the wrong
+// run and the run-over-run diff compares against the wrong baseline.
+func TestEntriesOrderedChronologically(t *testing.T) {
+	s := newStore(t)
+	base := "20260824T164500Z"
+
+	// Append in the order NewID would generate them.
+	want := []string{base}
+	if err := s.Append(Entry{ID: base}); err != nil {
+		t.Fatal(err)
+	}
+	for n := 2; n <= 12; n++ {
+		id := base + "-" + strconv.Itoa(n)
+		want = append(want, id)
+		if err := s.Append(Entry{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := s.Entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range entries {
+		if e.ID != want[i] {
+			t.Fatalf("entry %d = %s, want %s\n(a lexicographic sort puts -10 before -2)", i, e.ID, want[i])
+		}
+	}
+
+	latest, err := s.Latest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != base+"-12" {
+		t.Errorf("Latest = %s, want %s-12", latest.ID, base)
+	}
+}
+
+func TestEntriesOrderAcrossSeconds(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"20260824T164500Z-9", "20260824T164459Z", "20260824T164501Z"} {
+		if err := s.Append(Entry{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _ := s.Entries()
+	want := []string{"20260824T164459Z", "20260824T164500Z-9", "20260824T164501Z"}
+	for i, e := range entries {
+		if e.ID != want[i] {
+			t.Errorf("entry %d = %s, want %s", i, e.ID, want[i])
 		}
 	}
 }

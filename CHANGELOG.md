@@ -13,6 +13,8 @@ All notable changes to detection-decay.
 - **Verdicts change for two input classes:** volume above 3× baseline now reports `DEGRADED` (was `HEALTHY`), and a row carrying `probe_error` reports `PROBE_ERROR` (was `DEAD:SOURCE`).
 
 ### Added
+- **Run history and run-over-run change detection** (`--history <dir>`). Each run is persisted as an immutable `runs/<id>/decay.json` and indexed in a slim `history.json`; the output then leads with what moved since the previous run instead of restating the full table. Findings are matched by a fingerprint over rule, state, verdict and the decay score rounded to one decimal — an unchanged rule matches by hash, a worsened one does not, and sub-band noise does not churn. Storage is plain JSON files; the zero-dependency rule is what rules out SQLite here. Pattern borrowed from purple-loop's dashboard reporter, fingerprinting from threat-intel-arbiter's dedup key.
+- **A run that measured nothing is saved but not indexed.** If every probe failed, indexing it would put a false `0.00` on the trend line. The artifact is kept — a failed run is what you want to inspect.
 - **Exit codes carry the finding.** `--fail-on none|unknown|degraded|dead` exits `3` when any row is at or above the threshold. The tool always exited `0`, so it could not gate a cron job or a CI step — the single cheapest blocker to running it in production.
 - **`--format json`.** `Result` carried full JSON tags but `--format json` silently rendered a terminal table and exited `0`. The report is an envelope with `version`, `evidence`, a numeric `summary` and the full results. Numbers are carried as numbers — nothing downstream should have to recover a figure by re-parsing the prose that describes it.
 - **`--version`**, which `const version` existed for but nothing read.
@@ -24,6 +26,8 @@ All notable changes to detection-decay.
 - **Unknown tally.** Both renderers now report a count of rows that measured nothing (`INSUFFICIENT_DATA`, `PROBE_ERROR`) rather than silently omitting them from the summary.
 
 ### Fixed
+- **Path traversal in run ids.** A `^[A-Za-z0-9._-]+$` guard accepts `..`, so a crafted id resolved to `runs/../decay.json` and escaped the run directory. Containment is now verified after joining the path, so widening the pattern cannot reintroduce it. (The same guard, with the same gap, appears in purple-loop's server.)
+- **A corrupt trend index is rebuilt rather than fatal.** The index is written via a temp file and rename, so an interrupted run cannot leave a half-written one behind.
 - **Unknown `--format` values are rejected** instead of falling through to text and exiting `0`.
 - **Positional arguments are rejected.** `decay score foo.json` scored `evidence.json` and exited `0`, reporting on a file the user never named.
 - **The healthy ceiling no longer erases the reason.** `MaxHealthyDecay` overwrote the specific per-gate reason with a bare `"decay 0.10 exceeds healthy threshold 0.05"`, so an operator could see that a threshold was crossed but not which gate slipped. It now appends to the gate detail. The README gate table also documented an 80% band that the 0.95 ceiling made unreachable; both now describe the same behaviour.

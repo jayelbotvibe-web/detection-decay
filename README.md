@@ -140,6 +140,43 @@ Emit a machine-readable report:
 ./decay score --evidence evidence.json --format json | jq '.summary'
 ```
 
+### Tracking decay over time
+
+A single run says a rule looks dead; a series says *when it died*. Pass `--history` and each
+run is persisted and indexed:
+
+```bash
+./decay score --evidence evidence-live.json --history ./decay-history
+```
+
+```text
+<dir>/runs/20260824T164500Z/decay.json   full report, never rewritten
+<dir>/history.json                       trend index, one row per trusted run
+```
+
+The terminal output then leads with what moved, rather than restating a table you already
+read an hour ago:
+
+```text
+Changes since 20260824T154500Z
+  ~ win_proc_create.yml / live — HEALTHY → DEAD:FIELD (decay 0.00 → 1.00)
+  1 unchanged
+```
+
+Findings are matched by a fingerprint over the rule, state, verdict and banded decay score,
+so an unchanged rule matches by hash and a worsened one does not — with no diffing code and
+no bookkeeping. The score is rounded to one decimal inside the fingerprint so ordinary
+measurement noise is not reported as a change every run.
+
+Storage is plain JSON files, no database. Two behaviours worth knowing:
+
+- **A run that measured nothing is saved but not indexed.** If every probe failed, the run
+  carries no information about detection health, and indexing it would put a false `0.00`
+  on the trend line. The artifact is kept — a failed run is exactly what you want to inspect.
+- **A corrupt index is rebuilt, not fatal.** Losing trend history is not a reason to stop
+  scoring, and refusing to run until someone hand-repairs a JSON file is the wrong trade for
+  a monitoring tool.
+
 ### Wiring it into a scheduler
 
 `--fail-on` makes the exit code carry the finding, so cron or CI can act on it:
@@ -220,7 +257,10 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 - [ ] **Live mode** (`--live`) — poll the indexer directly. Prototyped on `feat/live-mode`, but that branch forked before v0.2.0 and is not merge-ready; being reimplemented on `main` with no third-party dependencies
 - [ ] **P(behavior) gate** — rule match freshness scoring (time since last alert match)
 - [ ] **Multi-rule scope** — calibrate across full Sigma rule sets, not just `win_proc_create.yml`
+- [x] **Run history and trend index** (`--history`) — persist each run, report what changed since the last one
 - [ ] **Alerting integration** — webhook/Slack/PagerDuty when decay is detected
+- [ ] **Rolling baseline calibration** — derive baselines from recorded history instead of a hand-written file
+- [ ] **Positive control** — push a known-good event through the pipeline and mark the run inconclusive if it does not land
 - [ ] **Closed calibration loop** — run probes, score results, feed back into baseline
 
 ## Limitations
@@ -228,7 +268,7 @@ Requires `curl` and `jq`. Use `--insecure` (or `DECAY_ES_INSECURE=1`) for self-s
 - **Evidence-driven**: the scorer reads static JSON; live measurement is via the reference collector script (`scripts/collect-opensearch.sh`), not a built-in poller.
 - **P(behavior) deferred**: alert freshness not yet modeled — the gate is held at 1.0 and says so in every explanation.
 - **Single-rule scope**: currently calibrated for `win_proc_create.yml` only.
-- **Hand-maintained baselines**: there is no history and no rolling calibration, so a fixed baseline will read a quiet weekend as `DEGRADED`. Set `baseline_age_seconds` so at least the confidence reflects it.
+- **Hand-maintained baselines**: `--history` records runs, but nothing yet derives a rolling baseline from them, so a fixed baseline will read a quiet weekend as `DEGRADED`. Set `baseline_age_seconds` so at least the confidence reflects it.
 - **No positive control**: the scorer trusts that a measurement of zero means zero. Set `probe_error` when your collector knows better.
 
 ⭐ **Star this repo** if you've hit silent detection decay in production. [Issues](https://github.com/jayelbotvibe-web/detection-decay/issues) and PRs welcome.

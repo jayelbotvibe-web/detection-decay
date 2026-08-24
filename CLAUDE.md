@@ -46,7 +46,12 @@ absence of dependencies is a feature of this tool.
   values, so the breakdown always reconciles with the number — enforced by `assertReconciles`
   in the tests. `Result.PSource/PField/PBehavior` are flat projections of the gate values,
   kept for the machine-readable surface; don't compute from them, compute from `Gates`.
-- `cmd/decay/main_test.go`, `internal/score/score_test.go` — renderer and model tests
+- `internal/history/history.go` — run persistence and the trend index. Plain JSON files,
+  no database: `runs/<id>/decay.json` is immutable, `history.json` is the slim index.
+  Two deliberate behaviours — a run that measured nothing is saved but **not** indexed, and
+  a corrupt index is rebuilt rather than fatal. `runDir` verifies path containment *after*
+  joining; the id regex alone accepts `..`.
+- `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`
 - `scripts/collect-opensearch.sh` — reference evidence collector for
   OpenSearch/Wazuh/Elasticsearch
 - `evidence.json` — demo input; `demo/dashboard.html` — generated artifact

@@ -450,7 +450,7 @@ func TestJSONReportIsMachineReadable(t *testing.T) {
 	sortResults(results)
 
 	var rep jsonReport
-	if err := json.Unmarshal([]byte(renderJSON("evidence.json", results)), &rep); err != nil {
+	if err := json.Unmarshal([]byte(renderJSON("evidence.json", results, nil)), &rep); err != nil {
 		t.Fatalf("report is not valid JSON: %v", err)
 	}
 
@@ -480,7 +480,7 @@ func TestJSONReportIsMachineReadable(t *testing.T) {
 }
 
 func TestJSONReportEmptyIsStillValid(t *testing.T) {
-	out := renderJSON("evidence.json", nil)
+	out := renderJSON("evidence.json", nil, nil)
 	var rep jsonReport
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("empty report is not valid JSON: %v", err)
@@ -490,5 +490,119 @@ func TestJSONReportEmptyIsStillValid(t *testing.T) {
 	}
 	if rep.Summary.Evaluated != 0 {
 		t.Errorf("empty report claims %d evaluated", rep.Summary.Evaluated)
+	}
+}
+
+// ---------- run-over-run diff ----------
+
+func scoreOne(rule, state string, volume int, field *float64) score.Result {
+	return score.Score(score.Evidence{
+		Rule: rule, State: state, Liveness: "active",
+		Volume: volume, BaselineVolume: 3000,
+		FieldPopulate: field, BaselineFieldPopulate: 1.0, Field: "image",
+	})
+}
+
+// TestDiffReportsTransitionsAsTransitions guards a regression in the diff
+// itself: keying on the fingerprint alone reported a verdict change as an
+// unrelated arrival and departure, so one incident read as two.
+func TestDiffReportsTransitionsAsTransitions(t *testing.T) {
+	before := []score.Result{scoreOne("r.yml", "live", 3000, fpv(1.0))}
+	after := []score.Result{scoreOne("r.yml", "live", 3000, fpv(0.0))}
+
+	ch := diffAgainst(after, before, "20260824T100000Z")
+
+	if len(ch.Changed) != 1 {
+		t.Fatalf("expected 1 changed finding, got %d (new=%d removed=%d)",
+			len(ch.Changed), len(ch.New), len(ch.Removed))
+	}
+	if len(ch.New) != 0 || len(ch.Removed) != 0 {
+		t.Errorf("a transition must not also report new/removed: new=%v removed=%v", ch.New, ch.Removed)
+	}
+	for _, want := range []string{"r.yml / live", "HEALTHY", "DEAD:FIELD", "0.00", "1.00"} {
+		if !strings.Contains(ch.Changed[0], want) {
+			t.Errorf("transition missing %q: %s", want, ch.Changed[0])
+		}
+	}
+}
+
+func TestDiffNewAndRemoved(t *testing.T) {
+	before := []score.Result{
+		scoreOne("stays.yml", "live", 3000, fpv(1.0)),
+		scoreOne("goes.yml", "live", 3000, fpv(1.0)),
+	}
+	after := []score.Result{
+		scoreOne("stays.yml", "live", 3000, fpv(1.0)),
+		scoreOne("arrives.yml", "live", 0, nil),
+	}
+
+	ch := diffAgainst(after, before, "20260824T100000Z")
+
+	if len(ch.New) != 1 || !strings.Contains(ch.New[0], "arrives.yml") {
+		t.Errorf("new = %v", ch.New)
+	}
+	if len(ch.Removed) != 1 || !strings.Contains(ch.Removed[0], "goes.yml") {
+		t.Errorf("removed = %v", ch.Removed)
+	}
+	if ch.Unchanged != 1 {
+		t.Errorf("unchanged = %d, want 1", ch.Unchanged)
+	}
+}
+
+// TestDiffIgnoresMeasurementNoise: a decay score that wobbles within a band must
+// not report a change every run, or the diff becomes as noisy as the full table.
+func TestDiffIgnoresMeasurementNoise(t *testing.T) {
+	before := []score.Result{scoreOne("r.yml", "live", 1500, fpv(1.0))} // decay 0.50
+	after := []score.Result{scoreOne("r.yml", "live", 1560, fpv(1.0))}  // decay 0.48
+
+	ch := diffAgainst(after, before, "20260824T100000Z")
+	if len(ch.Changed) != 0 {
+		t.Errorf("sub-band noise reported as a change: %v", ch.Changed)
+	}
+	if ch.Unchanged != 1 {
+		t.Errorf("unchanged = %d, want 1", ch.Unchanged)
+	}
+}
+
+func TestDiffIsDeterministic(t *testing.T) {
+	before := []score.Result{
+		scoreOne("a.yml", "live", 3000, fpv(1.0)),
+		scoreOne("b.yml", "live", 3000, fpv(1.0)),
+		scoreOne("c.yml", "live", 3000, fpv(1.0)),
+	}
+	after := []score.Result{scoreOne("z.yml", "live", 3000, fpv(1.0))}
+
+	// Removed is built from a map, so it must be sorted or the output churns
+	// between identical runs.
+	first := strings.Join(diffAgainst(after, before, "x").Removed, ",")
+	for i := 0; i < 20; i++ {
+		if got := strings.Join(diffAgainst(after, before, "x").Removed, ","); got != first {
+			t.Fatalf("removed order is not stable: %q vs %q", got, first)
+		}
+	}
+}
+
+// TestMeasuredGate: a run where every probe failed says nothing about detection
+// health, and indexing it would put a fake 0.00 on the trend line.
+func TestMeasuredGate(t *testing.T) {
+	allFailed := score.ScoreAll([]score.Evidence{
+		{Rule: "a.yml", State: "live", ProbeError: "i/o timeout"},
+		{Rule: "b.yml", State: "live", ProbeError: "i/o timeout"},
+	})
+	if measured(allFailed) {
+		t.Error("a run where every probe failed must not be indexed")
+	}
+
+	partial := score.ScoreAll([]score.Evidence{
+		{Rule: "a.yml", State: "live", ProbeError: "i/o timeout"},
+		{Rule: "b.yml", State: "live", Liveness: "active", Volume: 3000, BaselineVolume: 3000,
+			FieldPopulate: fpv(1.0), BaselineFieldPopulate: 1.0},
+	})
+	if !measured(partial) {
+		t.Error("a run with one usable measurement should still be indexed")
+	}
+
+	if measured(nil) {
+		t.Error("an empty run measured nothing")
 	}
 }

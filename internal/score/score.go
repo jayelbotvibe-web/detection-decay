@@ -3,6 +3,8 @@
 package score
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -150,6 +152,9 @@ type Result struct {
 	Confidence      Gate    `json:"confidence"`
 	ConfidenceLabel string  `json:"confidence_label"`
 	ConfidenceScore float64 `json:"confidence_score"`
+
+	// Fingerprint identifies this finding across runs. See Result.fingerprint.
+	Fingerprint string `json:"fingerprint"`
 
 	Health      float64 `json:"health"`
 	DecayScore  float64 `json:"decay_score"`
@@ -379,6 +384,7 @@ func Score(ev Evidence) Result {
 		r.Health, r.DecayScore = 1.0, 0.0
 		r.Verdict = VProbeError
 		r.Reason = fmt.Sprintf("measurement failed: %s — detection health unknown", ev.ProbeError)
+		r.Fingerprint = fingerprint(r)
 		r.Explanation = explain(r)
 		return r
 	}
@@ -464,8 +470,27 @@ func Score(ev Evidence) Result {
 			detail, r.DecayScore, MaxHealthyDecay)
 	}
 
+	r.Fingerprint = fingerprint(r)
 	r.Explanation = explain(r)
 	return r
+}
+
+// FingerprintPrecision is the number of decimal places the decay score is
+// rounded to inside a fingerprint. Ordinary measurement noise (0.50 one hour,
+// 0.52 the next) must not read as a state change, or every run reports churn
+// and the diff becomes as noisy as the full table it replaces.
+const FingerprintPrecision = 1
+
+// fingerprint identifies a finding across runs.
+//
+// The verdict and the banded decay score are inside the hash, so an unchanged
+// rule re-fingerprints identically and a rule that got worse produces a new
+// one. That is the whole of state-change detection — no diffing code, no
+// previous-state bookkeeping. Borrowed from threat-intel-arbiter's dedup key.
+func fingerprint(r Result) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|%s|%.*f", r.Rule, r.State, r.Verdict, FingerprintPrecision, r.DecayScore)
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // explain renders the per-gate breakdown and restates the final arithmetic with

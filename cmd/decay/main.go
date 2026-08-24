@@ -10,8 +10,10 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/jayelbotvibe-web/detection-decay/internal/history"
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
 
@@ -24,6 +26,7 @@ func main() {
 	outPath := scoreCmd.String("out", "", "output file path (default stdout)")
 	failOn := scoreCmd.String("fail-on", "none", "exit "+fmt.Sprint(exitDecay)+" when any row is at or worse than: none, degraded, dead, unknown")
 	showVersion := scoreCmd.Bool("version", false, "print version and exit")
+	historyDir := scoreCmd.String("history", "", "directory to persist runs and the trend index")
 
 	// Accept both `decay score [flags]` and `decay [flags]`.
 	args := os.Args[1:]
@@ -89,14 +92,21 @@ func main() {
 
 	sortResults(results)
 
+	// History is written before rendering so the run artifact and the terminal
+	// output describe the same thing, including what moved since last time.
+	var ch *changes
+	if *historyDir != "" {
+		ch = recordRun(*historyDir, *evidencePath, results)
+	}
+
 	var out string
 	switch *format {
 	case "html":
 		out = renderHTML(*evidencePath, results)
 	case "json":
-		out = renderJSON(*evidencePath, results)
+		out = renderJSON(*evidencePath, results, ch)
 	case "text":
-		out = renderText(*evidencePath, results)
+		out = renderText(*evidencePath, results) + renderChanges(ch)
 	default:
 		// An unrecognised format used to fall through to text and exit 0, so
 		// `--format json` silently produced a terminal table.
@@ -556,7 +566,18 @@ type jsonReport struct {
 	Version  string         `json:"version"`
 	Evidence string         `json:"evidence"`
 	Summary  jsonSummary    `json:"summary"`
+	Changes  *changes       `json:"changes,omitempty"`
 	Results  []score.Result `json:"results"`
+}
+
+// changes is what moved since the previous indexed run. Reading a full table
+// every hour is how a monitor gets ignored; what an operator needs is the diff.
+type changes struct {
+	PreviousRun string   `json:"previous_run"`
+	New         []string `json:"new"`     // rule/state not seen in the previous run
+	Changed     []string `json:"changed"` // same rule/state, different finding
+	Removed     []string `json:"removed"` // rule/state absent from this run
+	Unchanged   int      `json:"unchanged"`
 }
 
 // worstVerdict returns the most severe verdict present, by rank rather than by
@@ -575,12 +596,13 @@ func worstVerdict(results []score.Result) string {
 	return name
 }
 
-func renderJSON(evidencePath string, results []score.Result) string {
+func buildReport(evidencePath string, results []score.Result, ch *changes) jsonReport {
 	s := tally(results)
 	if results == nil {
 		results = []score.Result{}
 	}
-	rep := jsonReport{
+	return jsonReport{
+		Changes:  ch,
 		Version:  version,
 		Evidence: evidencePath,
 		Summary: jsonSummary{
@@ -595,11 +617,159 @@ func renderJSON(evidencePath string, results []score.Result) string {
 		},
 		Results: results,
 	}
-	b, err := json.MarshalIndent(rep, "", "  ")
+}
+
+func renderJSON(evidencePath string, results []score.Result, ch *changes) string {
+	b, err := json.MarshalIndent(buildReport(evidencePath, results, ch), "", "  ")
 	if err != nil {
 		// Unreachable for these types, but never emit malformed JSON silently.
 		fmt.Fprintf(os.Stderr, "error encoding report: %v\n", err)
 		os.Exit(exitIO)
 	}
 	return string(b) + "\n"
+}
+
+// ---------- run history ----------
+
+// findingKey identifies the entity being monitored. A rule/state pair persists
+// across runs; the finding attached to it is what moves.
+func findingKey(r score.Result) string {
+	return fmt.Sprintf("%s / %s", r.Rule, r.State)
+}
+
+// measured reports whether a run produced at least one usable measurement.
+// A run where every row failed to probe carries no information about detection
+// health, and indexing it would put a fake "0.00 worst decay" point on the
+// trend line — exactly the false reassurance this tool exists to prevent.
+func measured(results []score.Result) bool {
+	for _, r := range results {
+		if verdictRank(r.Verdict) != rankUnknown {
+			return true
+		}
+	}
+	return false
+}
+
+// diffAgainst compares this run with the previous one.
+//
+// Fingerprints carry the verdict and the banded decay score, so "did this
+// finding move" is a hash comparison rather than a field-by-field diff. But the
+// comparison is keyed on the rule/state *entity*, not the fingerprint alone:
+// keying on the hash reports a verdict transition as an unrelated arrival and
+// departure, which reads as two incidents instead of one.
+func diffAgainst(results []score.Result, prevResults []score.Result, prevID string) *changes {
+	prev := make(map[string]score.Result, len(prevResults))
+	for _, r := range prevResults {
+		prev[findingKey(r)] = r
+	}
+
+	ch := &changes{PreviousRun: prevID, New: []string{}, Changed: []string{}, Removed: []string{}}
+	seen := make(map[string]bool, len(results))
+
+	for _, r := range results {
+		key := findingKey(r)
+		seen[key] = true
+		was, existed := prev[key]
+		switch {
+		case !existed:
+			ch.New = append(ch.New, fmt.Sprintf("%s — %s", key, r.Verdict))
+		case was.Fingerprint != r.Fingerprint:
+			ch.Changed = append(ch.Changed, fmt.Sprintf("%s — %s → %s (decay %.2f → %.2f)",
+				key, was.Verdict, r.Verdict, was.DecayScore, r.DecayScore))
+		default:
+			ch.Unchanged++
+		}
+	}
+
+	for key, r := range prev {
+		if !seen[key] {
+			ch.Removed = append(ch.Removed, fmt.Sprintf("%s — was %s", key, r.Verdict))
+		}
+	}
+	// Map iteration is unordered; sort so the output is diffable across runs.
+	sort.Strings(ch.Removed)
+	return ch
+}
+
+// recordRun persists the run and returns what changed since the last one.
+//
+// History failures are reported but never fatal: losing a trend point is not a
+// reason to discard a scoring run the operator asked for.
+func recordRun(dir, evidencePath string, results []score.Result) *changes {
+	store := &history.Store{Dir: dir}
+
+	var ch *changes
+	if prev, err := store.Latest(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	} else if prev != nil {
+		if data, err := store.LoadRun(prev.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot read previous run %s: %v\n", prev.ID, err)
+		} else {
+			var prevRep jsonReport
+			if err := json.Unmarshal(data, &prevRep); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: previous run %s is unreadable: %v\n", prev.ID, err)
+			} else {
+				ch = diffAgainst(results, prevRep.Results, prev.ID)
+			}
+		}
+	}
+
+	report, err := json.MarshalIndent(buildReport(evidencePath, results, ch), "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot encode run: %v\n", err)
+		return ch
+	}
+
+	id := store.NewID(time.Now())
+	if _, err := store.Save(id, append(report, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot save run: %v\n", err)
+		return ch
+	}
+
+	// The artifact is kept either way; only the index is gated. A run you
+	// cannot trust is exactly the one you want to inspect afterwards.
+	if !measured(results) {
+		fmt.Fprintf(os.Stderr, "warning: run %s measured nothing — saved but not indexed\n", id)
+		return ch
+	}
+
+	s := tally(results)
+	if err := store.Append(history.Entry{
+		ID:           id,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		Evidence:     evidencePath,
+		Evaluated:    s.evaluated,
+		Healthy:      s.healthy,
+		Silent:       s.silent,
+		Unknown:      s.unknown,
+		WorstDecay:   s.worst,
+		WorstVerdict: worstVerdict(results),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot index run: %v\n", err)
+	}
+	return ch
+}
+
+// renderChanges appends the run-over-run diff to the text output. Reading a
+// full table every hour is how a monitor gets ignored; the diff is the point.
+func renderChanges(ch *changes) string {
+	if ch == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n\033[1mChanges since %s\033[0m\n", ch.PreviousRun))
+	if len(ch.New) == 0 && len(ch.Changed) == 0 && len(ch.Removed) == 0 {
+		sb.WriteString(colour("  nothing changed\n", "gray"))
+	}
+	for _, l := range ch.Changed {
+		sb.WriteString(colour(fmt.Sprintf("  ~ %s\n", l), "yellow"))
+	}
+	for _, l := range ch.New {
+		sb.WriteString(colour(fmt.Sprintf("  + %s\n", l), "red"))
+	}
+	for _, l := range ch.Removed {
+		sb.WriteString(colour(fmt.Sprintf("  - %s\n", l), "gray"))
+	}
+	sb.WriteString(colour(fmt.Sprintf("  %d unchanged\n", ch.Unchanged), "gray"))
+	return sb.String()
 }

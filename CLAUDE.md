@@ -104,8 +104,11 @@ confirmed to fail without it:
 
 ## Gotchas
 
-- The **scorer itself has no network access and handles no credentials** — that boundary is
-  stated in `SECURITY.md`. Keep it.
+- The **scorer handles no credentials** — that boundary is stated in `SECURITY.md`. Keep it.
+  Collection is a separate concern; only `scripts/collect-opensearch.sh` touches an indexer.
+- **`decay serve` is the only listener**, it is read-only, and it binds to loopback unless
+  `-allow-remote`. It has no authentication by design. If you add a route, wrap it in `get()`
+  and do not let it write anything.
 - `scripts/collect-opensearch.sh` needs `curl` and `jq`, plus env: `DECAY_ES_URL`
   (required, exits 2 without it), `DECAY_ES_USER`, `DECAY_ES_PASS`, optional
   `DECAY_ES_NETRC=1`, `DECAY_ES_INSECURE`, `DECAY_LIVENESS` (default `active`). The script

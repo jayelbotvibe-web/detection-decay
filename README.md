@@ -39,11 +39,11 @@ Each gate is checked independently against a healthy baseline:
 
 | Gate | Measurement | Fails when |
 |------|------------|------------|
-| **P(source)** | Agent liveness + event volume | Agent disconnected, or volume < 10% of baseline |
-| **P(field)** | Field populate rate vs baseline | Critical field goes null on new events |
+| **P(source)** | Agent liveness + event volume | Agent disconnected (dead), volume < 20% of baseline (dead), volume < 80% (degraded) |
+| **P(field)** | Field populate rate vs baseline | Field populate < 20% of baseline (dead), < 80% (degraded) |
 | **P(behavior)** | Rule match freshness | Deferred in MVP (= 1.0) |
 
-A verdict is assigned per rule-state pair: `HEALTHY`, `DEAD:SOURCE`, `DEAD:FIELD`, or `INSUFFICIENT_DATA`.
+A verdict is assigned per rule-state pair: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, or `INSUFFICIENT_DATA`.
 
 ## Demonstrated failure modes
 

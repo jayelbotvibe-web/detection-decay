@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"os"
 	"sort"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"github.com/jayelbotvibe-web/detection-decay/internal/score"
 )
 
-const version = "v0.1.1"
+const version = "v0.2.0"
 
 func main() {
 	scoreCmd := flag.NewFlagSet("score", flag.ExitOnError)
@@ -21,9 +22,6 @@ func main() {
 	outPath := scoreCmd.String("out", "", "output file path (for html format)")
 
 	// Accept both `decay score [flags]` and `decay [flags]`.
-	// The stdlib flag package stops parsing at the first positional
-	// argument, so a bare top-level FlagSet would silently ignore
-	// every flag placed after the word "score".
 	args := os.Args[1:]
 	switch {
 	case len(args) == 0:
@@ -53,27 +51,115 @@ func main() {
 
 	results := score.ScoreAll(evs)
 
-	// Sort: worst decay first
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].DecayScore > results[j].DecayScore
+	// Sort: worst decay first, tiebreak on rule name for stable output.
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].DecayScore != results[j].DecayScore {
+			return results[i].DecayScore > results[j].DecayScore
+		}
+		return results[i].Rule < results[j].Rule
 	})
 
 	switch *format {
 	case "html":
-		html := renderHTML(*evidencePath, results)
+		htmlOut := renderHTML(*evidencePath, results)
 		if *outPath != "" {
-			if err := os.WriteFile(*outPath, []byte(html), 0644); err != nil {
+			if err := os.WriteFile(*outPath, []byte(htmlOut), 0644); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *outPath, err)
 				os.Exit(1)
 			}
 			fmt.Printf("dashboard written to %s\n", *outPath)
 		} else {
-			fmt.Print(html)
+			fmt.Print(htmlOut)
 		}
 	default:
 		fmt.Print(renderText(*evidencePath, results))
 	}
 }
+
+// ---------- shared helpers ----------
+
+// summary holds computed tallies, shared by both renderers.
+type summary struct {
+	evaluated int
+	healthy   int
+	dead      int
+	degraded  int
+	silent    int // dead + degraded
+	worst     float64
+}
+
+func tally(results []score.Result) summary {
+	s := summary{evaluated: len(results)}
+	for _, r := range results {
+		switch r.Verdict {
+		case score.VHealthy:
+			s.healthy++
+		case score.VDeadSource, score.VDeadField:
+			s.dead++
+		case score.VDegraded:
+			s.degraded++
+		}
+		if r.DecayScore > s.worst {
+			s.worst = r.DecayScore
+		}
+	}
+	s.silent = s.dead + s.degraded
+	return s
+}
+
+// fieldDisplay returns the styled field-column cell for a result.
+// Both renderers use the same banding via PField.
+func fieldDisplay(r score.Result) (text string, badge string) {
+	if r.FieldPopulate == nil {
+		return "N/A", "gray"
+	}
+	cur := *r.FieldPopulate * 100
+	bl := r.BaselineFieldPopulate * 100
+	switch {
+	case r.PField < score.DeadThreshold:
+		return fmt.Sprintf("%.0f%%→%.0f%%", bl, cur), "dead-field"
+	case r.PField < score.HealthyThreshold:
+		return fmt.Sprintf("%.0f%%→%.0f%%", bl, cur), "degraded"
+	default:
+		return fmt.Sprintf("%.0f%%", cur), "healthy"
+	}
+}
+
+// verdictCSS returns the CSS class for a verdict.
+func verdictCSS(v string) string {
+	switch v {
+	case score.VHealthy:
+		return "healthy"
+	case score.VDegraded:
+		return "degraded"
+	case score.VDeadSource:
+		return "dead-source"
+	case score.VDeadField:
+		return "dead-field"
+	case score.VInsufficientData:
+		return "gray"
+	default:
+		return "gray"
+	}
+}
+
+// heroClass returns the CSS class for the hero worst-verdict display.
+func heroClass(v string) string {
+	switch v {
+	case score.VDeadSource:
+		return "dead-source"
+	case score.VDeadField:
+		return "dead-field"
+	case score.VDegraded:
+		return "degraded"
+	case score.VInsufficientData:
+		return "gray"
+	default:
+		return "healthy"
+	}
+}
+
+// ---------- text renderer ----------
 
 func renderText(evidencePath string, results []score.Result) string {
 	var sb strings.Builder
@@ -104,24 +190,21 @@ func renderText(evidencePath string, results []score.Result) string {
 		vol := colour(fmt.Sprintf("%-6d", r.Volume), "green")
 		if r.Volume == 0 {
 			vol = colour(fmt.Sprintf("%-6s", fmt.Sprintf("%d→%d", r.BaselineVolume, r.Volume)), "red")
-		} else if float64(r.Volume) < 0.5*float64(r.BaselineVolume) {
+		} else if r.PSource < score.HealthyThreshold {
 			vol = colour(fmt.Sprintf("%-6d", r.Volume), "yellow")
 		}
 
-		field := ""
-		if r.FieldPopulate == nil {
-			field = colour("N/A    ", "gray")
-		} else if *r.FieldPopulate < 0.5*r.BaselineFieldPopulate {
-			field = colour(fmt.Sprintf("%.0f%%→%.0f%% ", r.BaselineFieldPopulate*100, *r.FieldPopulate*100), "red")
-		} else {
-			field = colour(fmt.Sprintf("%.0f%%     ", *r.FieldPopulate*100), "green")
+		fieldStr, fbadge := fieldDisplay(r)
+		fieldCell := colour(fmt.Sprintf("%-7s", fieldStr), fbadge)
+		if fbadge == "gray" {
+			fieldCell = colour(fmt.Sprintf("%-7s", fieldStr), "gray")
 		}
 
 		decay := colour(fmt.Sprintf("%-5.2f", r.DecayScore), verdictColor(r.Verdict))
 		verdict := colour(fmt.Sprintf("%-18s", r.Verdict), verdictColor(r.Verdict))
 
 		sb.WriteString(fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │\n",
-			namePad, live, vol, field, decay, verdict))
+			namePad, live, vol, fieldCell, decay, verdict))
 	}
 
 	sb.WriteString("└──────────────────────────────────────┴──────┴────────┴───────┴───────┴────────────────────┘\n\n")
@@ -138,25 +221,15 @@ func renderText(evidencePath string, results []score.Result) string {
 	}
 
 	// Summary
-	healthy := 0
-	dead := 0
-	worst := 0.0
-	for _, r := range results {
-		if r.Verdict == score.VHealthy {
-			healthy++
-		} else if r.Verdict == score.VDeadSource || r.Verdict == score.VDeadField {
-			dead++
-		}
-		if r.DecayScore > worst {
-			worst = r.DecayScore
-		}
-	}
+	s := tally(results)
 	sb.WriteString(fmt.Sprintf("\n\033[1m%d evaluated · %d healthy · %d silently decayed · worst %.2f\033[0m\n",
-		len(results), healthy, dead, worst))
+		s.evaluated, s.healthy, s.silent, s.worst))
 	sb.WriteString("\033[90mA volume-only monitor catches source-death by luck — but MISSES field-drift entirely.\033[0m\n")
 
 	return sb.String()
 }
+
+// ---------- HTML renderer ----------
 
 func renderHTML(evidencePath string, results []score.Result) string {
 	var sb strings.Builder
@@ -169,6 +242,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:monospace;padding:2rem}
 .hero .worst{font-size:2rem;font-weight:bold}
 .dead-source{color:#f85149}
 .dead-field{color:#f0883e}
+.degraded{color:#d2991d}
 .healthy{color:#3fb950}
 .gray{color:#8b949e}
 table{width:100%;border-collapse:collapse;margin-top:1rem}
@@ -182,86 +256,75 @@ th{color:#8b949e;font-weight:normal;font-size:0.85rem}
 <h1>decay %s — detection-decay dashboard</h1>
 <p>evidence: %s</p>
 <p class="gray">no evidence rows — nothing to score</p>
-</div></body></html>`, version, evidencePath))
+</div></body></html>`, version, html.EscapeString(evidencePath)))
 		return sb.String()
 	}
 
-	// Find worst
+	// Worst is results[0] (sorted by decay desc).
 	worst := results[0]
-	for _, r := range results {
-		if r.DecayScore > worst.DecayScore {
-			worst = r
-		}
-	}
 
 	// Hero
-	vcls := "healthy"
-	if worst.Verdict == "DEAD:SOURCE" {
-		vcls = "dead-source"
-	} else if worst.Verdict == "DEAD:FIELD" {
-		vcls = "dead-field"
+	hcls := heroClass(worst.Verdict)
+	fieldPct := 0.0
+	if worst.FieldPopulate != nil {
+		fieldPct = *worst.FieldPopulate * 100
 	}
 	sb.WriteString(fmt.Sprintf(`<div class="hero">
 <h1>decay %s — detection-decay dashboard</h1>
 <p>evidence: %s</p>
 <div class="worst %s">%s</div>
 <p>liveness %s · volume %d · field %.0f%% — %s</p>
-</div>`, version, evidencePath, vcls, worst.Verdict, worst.Liveness, worst.Volume,
-		func() float64 {
-			if worst.FieldPopulate != nil {
-				return *worst.FieldPopulate * 100
-			}
-			return 0
-		}(),
-		worst.Reason))
+</div>`,
+		version,
+		html.EscapeString(evidencePath),
+		html.EscapeString(hcls),
+		html.EscapeString(worst.Verdict),
+		html.EscapeString(worst.Liveness),
+		worst.Volume,
+		fieldPct,
+		html.EscapeString(worst.Reason),
+	))
 
 	// Table
 	sb.WriteString("<table><tr><th>RULE / STATE</th><th>LIVE</th><th>VOLUME</th><th>FIELD</th><th>DECAY</th><th>VERDICT</th></tr>")
 	for _, r := range results {
-		live := fmt.Sprintf(`<span class="healthy">%s</span>`, r.Liveness)
+		live := fmt.Sprintf(`<span class="healthy">%s</span>`, html.EscapeString(r.Liveness))
 		if !strings.EqualFold(r.Liveness, "active") {
-			live = fmt.Sprintf(`<span class="dead-source">%s</span>`, r.Liveness)
+			live = fmt.Sprintf(`<span class="dead-source">%s</span>`, html.EscapeString(r.Liveness))
 		}
+
 		vol := fmt.Sprintf(`<span class="healthy">%d</span>`, r.Volume)
 		if r.Volume == 0 {
 			vol = fmt.Sprintf(`<span class="dead-source">%d→%d</span>`, r.BaselineVolume, r.Volume)
+		} else if r.PSource < score.HealthyThreshold {
+			vol = fmt.Sprintf(`<span class="degraded">%d</span>`, r.Volume)
 		}
-		field := `<span class="gray">N/A</span>`
-		if r.FieldPopulate != nil {
-			if *r.FieldPopulate < 0.5 {
-				field = fmt.Sprintf(`<span class="dead-field">%.0f%%→%.0f%%</span>`, r.BaselineFieldPopulate*100, *r.FieldPopulate*100)
-			} else {
-				field = fmt.Sprintf(`<span class="healthy">%.0f%%</span>`, *r.FieldPopulate*100)
-			}
-		}
-		vcls := "healthy"
-		if r.Verdict == "DEAD:SOURCE" {
-			vcls = "dead-source"
-		} else if r.Verdict == "DEAD:FIELD" {
-			vcls = "dead-field"
-		}
-		verdict := fmt.Sprintf(`<span class="%s">%s</span>`, vcls, r.Verdict)
 
-		sb.WriteString(fmt.Sprintf("<tr><td>%s / %s</td><td>%s</td><td>%s</td><td>%s</td><td>%.2f</td><td>%s</td></tr>",
-			r.Rule, r.State, live, vol, field, r.DecayScore, verdict))
+		fieldStr, fbadge := fieldDisplay(r)
+		fieldCell := fmt.Sprintf(`<span class="gray">%s</span>`, html.EscapeString(fieldStr))
+		if fbadge != "gray" {
+			fieldCell = fmt.Sprintf(`<span class="%s">%s</span>`, fbadge, html.EscapeString(fieldStr))
+		}
+
+		vcls := verdictCSS(r.Verdict)
+
+		sb.WriteString(fmt.Sprintf("<tr><td>%s / %s</td><td>%s</td><td>%s</td><td>%s</td><td>%.2f</td><td><span class=\"%s\">%s</span></td></tr>",
+			html.EscapeString(r.Rule), html.EscapeString(r.State),
+			live, vol, fieldCell, r.DecayScore,
+			html.EscapeString(vcls), html.EscapeString(r.Verdict),
+		))
 	}
 	sb.WriteString("</table>")
 
-	healthy := 0
-	dead := 0
-	for _, r := range results {
-		if r.Verdict == "HEALTHY" {
-			healthy++
-		} else {
-			dead++
-		}
-	}
+	s := tally(results)
 	sb.WriteString(fmt.Sprintf(`<div class="footer">%d evaluated · %d healthy · %d silently decayed<br>A volume-only monitor catches source-death by luck — but MISSES field-drift entirely.</div>`,
-		len(results), healthy, dead))
+		s.evaluated, s.healthy, s.silent))
 
 	sb.WriteString("</body></html>")
 	return sb.String()
 }
+
+// ---------- display helpers ----------
 
 func padRight(s string, width int) string {
 	// Strip ANSI codes before measuring
@@ -285,12 +348,13 @@ func padRight(s string, width int) string {
 
 func colour(s, c string) string {
 	codes := map[string]string{
-		"green":  "\033[32m",
-		"red":    "\033[31m",
-		"yellow": "\033[33m",
-		"gray":   "\033[90m",
-		"cyan":   "\033[36m",
-		"amber":  "\033[33m",
+		"green":    "\033[32m",
+		"red":      "\033[31m",
+		"yellow":   "\033[33m",
+		"gray":     "\033[90m",
+		"cyan":     "\033[36m",
+		"amber":    "\033[33m",
+		"degraded": "\033[33m",
 	}
 	if code, ok := codes[c]; ok {
 		return code + s + "\033[0m"
@@ -300,14 +364,16 @@ func colour(s, c string) string {
 
 func verdictColor(v string) string {
 	switch v {
-	case "HEALTHY":
+	case score.VHealthy:
 		return "green"
-	case "DEAD:SOURCE":
-		return "red"
-	case "DEAD:FIELD":
+	case score.VDegraded:
 		return "yellow"
-	case "INSUFFICIENT_DATA":
+	case score.VDeadSource:
+		return "red"
+	case score.VDeadField:
 		return "amber"
+	case score.VInsufficientData:
+		return "gray"
 	default:
 		return "gray"
 	}

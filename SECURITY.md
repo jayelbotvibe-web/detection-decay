@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| v0.2.x  | ✅ |
+| v0.3.x  | ✅ |
+| v0.2.x  | ❌ |
 
 This is an MVP. The tool reads static JSON evidence files — no network listeners, no credential handling, no persistence.
 

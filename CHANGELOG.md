@@ -2,7 +2,7 @@
 
 All notable changes to detection-decay.
 
-## [Unreleased]
+## [v0.3.0] — 2026-08-24
 
 ### Migration note
 - **A sixth verdict, `PROBE_ERROR`, was added.** Anything keyed on exact verdict labels must handle the full set: `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`, `PROBE_ERROR`.

@@ -78,7 +78,7 @@ No code generation, no `go generate`.
 
 `HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`, `PROBE_ERROR`.
 
-The set grew in v0.2.0 (`DEGRADED`) and again after it (`PROBE_ERROR`) — anything keyed on
+The set grew in v0.2.0 (`DEGRADED`) and again in v0.3.0 (`PROBE_ERROR`) — anything keyed on
 exact verdict labels must handle all six. Both changes are migration notes in `CHANGELOG.md`.
 
 **Three invariants the scorer must never violate.** Each has a regression test that was

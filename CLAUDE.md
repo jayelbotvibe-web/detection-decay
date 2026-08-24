@@ -35,23 +35,63 @@ absence of dependencies is a feature of this tool.
 
 ## Architecture
 
-- `cmd/decay/main.go` (380 lines) — entry point: flags, evidence load, sorting, text and
+- `cmd/decay/main.go` — entry point: flags, evidence load, sorting, text and
   HTML renderers. `const version`.
-- `internal/score/score.go` (180 lines) — the model: `Evidence` and `Result` structs,
+- `internal/score/score.go` — the model: `Evidence` and `Result` structs,
   `Score()`, `ScoreAll()`, `const MaxHealthyDecay = 0.05`
-- `cmd/decay/main_test.go`, `internal/score/score_test.go` — renderer and model tests
+
+  Gates are the source of truth. `Score()` builds a `[]Gate` (`source`, `field`,
+  `behavior`); each `Gate` holds the `[]Contribution` that produced its value, and a gate's
+  value is the **product** of its factors. `Result.Explanation` is rendered from those same
+  values, so the breakdown always reconciles with the number — enforced by `assertReconciles`
+  in the tests. `Result.PSource/PField/PBehavior` are flat projections of the gate values,
+  kept for the machine-readable surface; don't compute from them, compute from `Gates`.
+- `internal/history/history.go` — run persistence and the trend index. Plain JSON files,
+  no database: `runs/<id>/decay.json` is immutable, `history.json` is the slim index.
+  Two deliberate behaviours — a run that measured nothing is saved but **not** indexed, and
+  a corrupt index is rebuilt rather than fatal. `runDir` verifies path containment *after*
+  joining; the id regex alone accepts `..`.
+- `internal/calibrate/calibrate.go` — derives baselines from history. **Only `HEALTHY`
+  observations contribute**; that is the whole point of the package. Calibrating from every
+  observation makes a rolling baseline follow a dead source down until the outage reads
+  healthy — silent, permanent, and worse than no calibration. `TestRatchetGuard` pins it.
+  Baselines are medians, not means.
+- `internal/server/server.go` + `internal/server/web/index.html` — read-only dashboard,
+  `//go:embed`. Read-only by construction: every route is wrapped in `get()`, which 405s
+  anything else. Handlers do **no** id sanitising of their own — `history.Store` owns that
+  decision, so there is one place that defines a valid run id. Loopback-only unless
+  `-allow-remote`.
+- `cmd/decay/main_test.go`, `internal/score/score_test.go`, `internal/history/history_test.go`,
+  `internal/calibrate/calibrate_test.go`, `internal/server/server_test.go`
 - `scripts/collect-opensearch.sh` — reference evidence collector for
-  OpenSearch/Wazuh/Elasticsearch
+  OpenSearch/Wazuh/Elasticsearch. Still one rule per invocation.
+- `scripts/sigma-to-rules.py` + `scripts/fieldmap-wazuh.json` — derive a rules file from
+  Sigma. **The only Python, and the only PyYAML**, deliberately: Sigma is YAML and the
+  binary is stdlib-only, so conversion happens here and the binary reads JSON. Tests are
+  `scripts/sigma_to_rules_test.py` (stdlib `unittest`), run by the `sigma` CI job against
+  vendored fixtures in `testdata/sigma/`. Nothing consumes `rules.json` yet.
 - `evidence.json` — demo input; `demo/dashboard.html` — generated artifact
 
 No code generation, no `go generate`.
 
-## The five verdicts
+## The six verdicts
 
-`HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`.
+`HEALTHY`, `DEGRADED`, `DEAD:SOURCE`, `DEAD:FIELD`, `INSUFFICIENT_DATA`, `PROBE_ERROR`.
 
-These strings changed in v0.2.0 — anything keyed on exact verdict labels must handle the
-full five-value set. Documented as a migration note in `CHANGELOG.md`.
+The set grew in v0.2.0 (`DEGRADED`) and again in v0.3.0 (`PROBE_ERROR`) — anything keyed on
+exact verdict labels must handle all six. Both changes are migration notes in `CHANGELOG.md`.
+
+**Three invariants the scorer must never violate.** Each has a regression test that was
+confirmed to fail without it:
+
+1. **Never report a number you did not measure.** A `null` field populate abstains; a row
+   with `probe_error` set reports `PROBE_ERROR` and *no decay*, because a zero you could not
+   measure is not a zero you observed. Renderers print `n/a`, never `0%`.
+2. **Never report `HEALTHY` above `MaxHealthyDecay`** — and when the ceiling downgrades a
+   row, *append* to the per-gate detail rather than replacing it. The operator needs to know
+   which gate slipped.
+3. **Over-collection is never `DEAD:SOURCE`.** Events are flowing; the gate is floored at
+   `DeadThreshold`.
 
 ## Conventions
 
@@ -64,8 +104,11 @@ full five-value set. Documented as a migration note in `CHANGELOG.md`.
 
 ## Gotchas
 
-- The **scorer itself has no network access and handles no credentials** — that boundary is
-  stated in `SECURITY.md`. Keep it.
+- The **scorer handles no credentials** — that boundary is stated in `SECURITY.md`. Keep it.
+  Collection is a separate concern; only `scripts/collect-opensearch.sh` touches an indexer.
+- **`decay serve` is the only listener**, it is read-only, and it binds to loopback unless
+  `-allow-remote`. It has no authentication by design. If you add a route, wrap it in `get()`
+  and do not let it write anything.
 - `scripts/collect-opensearch.sh` needs `curl` and `jq`, plus env: `DECAY_ES_URL`
   (required, exits 2 without it), `DECAY_ES_USER`, `DECAY_ES_PASS`, optional
   `DECAY_ES_NETRC=1`, `DECAY_ES_INSECURE`, `DECAY_LIVENESS` (default `active`). The script
@@ -74,12 +117,27 @@ full five-value set. Documented as a migration note in `CHANGELOG.md`.
 
 ## State
 
-Working MVP, actively developed. CI exists and runs on push/PR to `main`. Zero TODO/FIXME
-markers.
+Working MVP, actively developed. Zero TODO/FIXME markers.
 
-**Note the branch state:** HEAD has been sitting on `fix/verdict-thresholds`, one commit
-ahead of origin and unpushed. Default branch is `main`. Other remote branches exist —
-`feat/live-mode` (README says live mode "shipped on `feat/live-mode`; pending merge") and
-`docs/readme-deploy`. Check where you are before committing.
+**CI only triggers on `main`** (`.github/workflows/go.yml`), so pushes to a feature branch
+run nothing until a PR is opened. Run the gates locally.
 
-Roadmap items still unfinished: P(behavior) gate, multi-rule scope, alerting, calibration loop.
+**Note for running tests here:** `/tmp` is mounted noexec in some sandboxes, which makes
+`go test` fail with `fork/exec ... permission denied`. Set `GOTMPDIR` somewhere executable.
+
+**Note the branch state.** Default branch is `main`. Work has been stacking on unpushed
+branches: `fix/verdict-thresholds` (banded verdicts, PR #3) and `feat/trustworthy-verdicts`
+on top of it. Check where you are before committing.
+
+`feat/live-mode` (PR #1) is **not a merge candidate** — it branched off the *initial* commit,
+so merging it would delete CI, `SECURITY.md` and `scripts/collect-opensearch.sh`, revert the
+scoring model to the v0.1.x binary steps, add a `gopkg.in/yaml.v3` dependency, and hardcode
+`InsecureSkipVerify: true` against what `SECURITY.md` claims. Its good ideas (live probing,
+a probe-error verdict) are being reimplemented on `main` instead.
+
+**The zero-dependency rule is a hard constraint**, not a preference. It is what pushes
+history onto plain JSON run files rather than SQLite, and Sigma ingestion into a conversion
+script rather than a YAML parser in the binary.
+
+Roadmap items still unfinished: P(behavior) gate, live mode, multi-rule scope, run history,
+alerting, calibration loop.

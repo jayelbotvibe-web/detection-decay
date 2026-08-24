@@ -1,6 +1,5 @@
 [
   {
-    "_note": "Model is SIEM/source-agnostic. This file demonstrates Windows Sysmon / Wazuh examples.",
     "rule": "win_proc_create.yml",
     "state": "baseline",
     "liveness": "active",

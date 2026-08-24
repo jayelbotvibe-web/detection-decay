@@ -1,6 +1,10 @@
 package score
 
-import "testing"
+import (
+	"math"
+	"strings"
+	"testing"
+)
 
 func TestInsufficientData(t *testing.T) {
 	fp := 1.0 // non-null, healthy
@@ -267,7 +271,7 @@ func TestFieldNameInReason(t *testing.T) {
 		t.Fatalf("expected DEAD:FIELD, got %s", r.Verdict)
 	}
 	// Should contain the actual field name, not "Image".
-	if got := r.Reason; !contains(got, "CommandLine") {
+	if got := r.Reason; !strings.Contains(got, "CommandLine") {
 		t.Errorf("reason %q should contain field name 'CommandLine'", got)
 	}
 }
@@ -288,7 +292,7 @@ func TestFieldNameFallback(t *testing.T) {
 	if r.Verdict != VDeadField {
 		t.Fatalf("expected DEAD:FIELD, got %s", r.Verdict)
 	}
-	if got := r.Reason; !contains(got, "field populate") {
+	if got := r.Reason; !strings.Contains(got, "field populate") {
 		t.Errorf("reason %q should contain fallback 'field'", got)
 	}
 }
@@ -320,11 +324,217 @@ func TestScoreAllEmpty(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+// ---------- helpers ----------
+
+func fp(v float64) *float64 { return &v }
+
+// assertReconciles is the explanation-integrity harness. A gate's stated value
+// must equal the product of the contributions its explanation lists, and the
+// health must equal the product of the gates — otherwise the breakdown shown to
+// an operator describes a number the scorer did not actually produce.
+func assertReconciles(t *testing.T, label string, r Result) {
+	t.Helper()
+	const eps = 1e-9
+
+	health := 1.0
+	for _, g := range r.Gates {
+		if want := g.product(); math.Abs(g.Value-want) > eps {
+			t.Errorf("%s: gate %q value %.4f but its factors multiply to %.4f — breakdown does not reconcile",
+				label, g.Name, g.Value, want)
+		}
+		if len(g.Factors) == 0 {
+			t.Errorf("%s: gate %q has no contributing factors to explain its value", label, g.Name)
+		}
+		health *= g.Value
+	}
+	if math.Abs(r.Health-health) > eps {
+		t.Errorf("%s: health %.4f but gates multiply to %.4f", label, r.Health, health)
+	}
+	if math.Abs(r.DecayScore-(1-r.Health)) > eps {
+		t.Errorf("%s: decay %.4f != 1-health %.4f", label, r.DecayScore, 1-r.Health)
+	}
+	if r.Reason == "" {
+		t.Errorf("%s: verdict %s carries no reason", label, r.Verdict)
+	}
+}
+
+// ---------- reconciliation ----------
+
+func TestExplanationReconcilesAcrossAllPaths(t *testing.T) {
+	cases := map[string]Evidence{
+		"healthy":         {Rule: "r", Liveness: "active", Volume: 64, BaselineVolume: 64, FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0},
+		"dead source":     {Rule: "r", Liveness: "active", Volume: 0, BaselineVolume: 64, FieldPopulate: nil, BaselineFieldPopulate: 1.0},
+		"dead field":      {Rule: "r", Liveness: "active", Volume: 234, BaselineVolume: 64, FieldPopulate: fp(0.0), BaselineFieldPopulate: 1.0},
+		"degraded both":   {Rule: "r", Liveness: "active", Volume: 32, BaselineVolume: 64, FieldPopulate: fp(0.5), BaselineFieldPopulate: 1.0},
+		"disconnected":    {Rule: "r", Liveness: "disconnected", Volume: 0, BaselineVolume: 64, FieldPopulate: nil, BaselineFieldPopulate: 1.0},
+		"no baseline":     {Rule: "r", Liveness: "active", Volume: 0, BaselineVolume: 0, FieldPopulate: nil, BaselineFieldPopulate: 0},
+		"over collection": {Rule: "r", Liveness: "active", Volume: 5000, BaselineVolume: 64, FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0},
+		"compound":        {Rule: "r", Liveness: "active", Volume: 58, BaselineVolume: 64, FieldPopulate: fp(0.9), BaselineFieldPopulate: 1.0},
+	}
+	for label, ev := range cases {
+		assertReconciles(t, label, Score(ev))
+	}
+}
+
+func TestExplanationRestatesArithmetic(t *testing.T) {
+	r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 22, BaselineVolume: 200,
+		FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+
+	// The final line must let a reader recompute the score by hand.
+	for _, want := range []string{"DecayScore: 1 - (", " × ", "0.11", "→ DEAD:SOURCE"} {
+		if !strings.Contains(r.Explanation, want) {
+			t.Errorf("explanation missing %q:\n%s", want, r.Explanation)
 		}
 	}
-	return false
+	// And every gate must be named with its own factors.
+	for _, gate := range []string{"P(source):", "P(field):", "P(behavior):"} {
+		if !strings.Contains(r.Explanation, gate) {
+			t.Errorf("explanation missing %q:\n%s", gate, r.Explanation)
+		}
+	}
+}
+
+// ---------- band boundaries ----------
+
+func TestBandBoundariesAreExact(t *testing.T) {
+	// DeadThreshold is exclusive: exactly 0.20 of baseline is DEGRADED, not dead.
+	cases := []struct {
+		name           string
+		volume         int
+		wantDeadSource bool
+	}{
+		{"just above dead", 20, false}, // 0.20 exactly
+		{"just below dead", 19, true},  // 0.19
+	}
+	for _, c := range cases {
+		r := Score(Evidence{Rule: "r", Liveness: "active", Volume: c.volume, BaselineVolume: 100,
+			FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+		if got := r.Verdict == VDeadSource; got != c.wantDeadSource {
+			t.Errorf("%s (volume %d/100): verdict %s, wantDeadSource=%v",
+				c.name, c.volume, r.Verdict, c.wantDeadSource)
+		}
+	}
+
+	// Same exclusivity on the field gate.
+	if r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 100, BaselineVolume: 100,
+		FieldPopulate: fp(0.20), BaselineFieldPopulate: 1.0}); r.Verdict == VDeadField {
+		t.Errorf("field at exactly DeadThreshold should not be DEAD:FIELD, got %s", r.Verdict)
+	}
+	if r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 100, BaselineVolume: 100,
+		FieldPopulate: fp(0.19), BaselineFieldPopulate: 1.0}); r.Verdict != VDeadField {
+		t.Errorf("field just below DeadThreshold should be DEAD:FIELD, got %s", r.Verdict)
+	}
+}
+
+// TestVerdictMonotonicInVolume is the property that catches band-table errors:
+// as the source measurement worsens, the verdict must never improve.
+func TestVerdictMonotonicInVolume(t *testing.T) {
+	rank := map[string]int{VHealthy: 0, VDegraded: 1, VDeadField: 2, VDeadSource: 3}
+	prev, prevVol := -1, 0
+	for vol := 100; vol >= 0; vol-- {
+		r := Score(Evidence{Rule: "r", Liveness: "active", Volume: vol, BaselineVolume: 100,
+			FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+		got, ok := rank[r.Verdict]
+		if !ok {
+			t.Fatalf("volume %d: unranked verdict %s", vol, r.Verdict)
+		}
+		if got < prev {
+			t.Fatalf("verdict improved as volume fell: %d events → rank %d, %d events → rank %d (%s)",
+				prevVol, prev, vol, got, r.Verdict)
+		}
+		prev, prevVol = got, vol
+	}
+}
+
+// ---------- over-collection ----------
+
+func TestOverCollectionIsDegradedNotHealthy(t *testing.T) {
+	// 2000 events against a baseline of 64 is a lost filter or a duplicated
+	// pipeline. Clamping the ratio to 1.0 used to score this a perfect 0.00.
+	r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 2000, BaselineVolume: 64,
+		FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+	if r.Verdict != VDegraded {
+		t.Errorf("expected DEGRADED for 3125%% of baseline, got %s (decay %.2f)", r.Verdict, r.DecayScore)
+	}
+	if !strings.Contains(r.Reason, "over-collection") {
+		t.Errorf("reason should name over-collection, got %q", r.Reason)
+	}
+}
+
+func TestOverCollectionNeverReadsAsDead(t *testing.T) {
+	// Events are demonstrably flowing, so no amount of flooding may report the
+	// source dead — that would send an operator hunting a non-existent outage.
+	for _, vol := range []int{200, 2000, 200000, 20000000} {
+		r := Score(Evidence{Rule: "r", Liveness: "active", Volume: vol, BaselineVolume: 64,
+			FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+		if r.Verdict == VDeadSource {
+			t.Errorf("volume %d: over-collection reported DEAD:SOURCE", vol)
+		}
+		if r.PSource < DeadThreshold {
+			t.Errorf("volume %d: P(source) %.2f fell below the over-collection floor %.2f",
+				vol, r.PSource, DeadThreshold)
+		}
+	}
+}
+
+func TestNormalVarianceStaysHealthy(t *testing.T) {
+	// Up to OverThreshold, above-baseline volume is ordinary variance.
+	for _, vol := range []int{64, 96, 128, 192} {
+		r := Score(Evidence{Rule: "r", Liveness: "active", Volume: vol, BaselineVolume: 64,
+			FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+		if r.Verdict != VHealthy {
+			t.Errorf("volume %d/64 (%.1fx) should be HEALTHY, got %s", vol, float64(vol)/64, r.Verdict)
+		}
+	}
+}
+
+// ---------- probe failure ----------
+
+func TestProbeErrorIsNotADetectionOutage(t *testing.T) {
+	// Volume 0 against a baseline of 64 is textbook DEAD:SOURCE — but the probe
+	// failed, so the zero is an artefact of the measurement, not the telemetry.
+	r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 0, BaselineVolume: 64,
+		FieldPopulate: nil, BaselineFieldPopulate: 1.0,
+		ProbeError: "dial tcp 127.0.0.1:9200: connection refused"})
+
+	if r.Verdict != VProbeError {
+		t.Fatalf("expected PROBE_ERROR, got %s", r.Verdict)
+	}
+	if r.DecayScore != 0.0 {
+		t.Errorf("a failed probe must not claim decay, got %.2f", r.DecayScore)
+	}
+	if !strings.Contains(r.Reason, "connection refused") {
+		t.Errorf("reason should carry the probe error, got %q", r.Reason)
+	}
+	assertReconciles(t, "probe error", r)
+}
+
+// ---------- the healthy ceiling ----------
+
+func TestHealthyCeilingPreservesGateDetail(t *testing.T) {
+	// Both gates sit above HealthyThreshold but compound past MaxHealthyDecay.
+	// The ceiling must explain *which* gates slipped; it used to replace the
+	// per-gate detail with a bare threshold message.
+	r := Score(Evidence{Rule: "r", Liveness: "active", Volume: 58, BaselineVolume: 64,
+		FieldPopulate: fp(0.9), BaselineFieldPopulate: 1.0, Field: "image"})
+
+	if r.Verdict != VDegraded {
+		t.Fatalf("expected DEGRADED from the ceiling, got %s (decay %.2f)", r.Verdict, r.DecayScore)
+	}
+	for _, want := range []string{"volume 58", "image populate", "exceeds healthy ceiling"} {
+		if !strings.Contains(r.Reason, want) {
+			t.Errorf("ceiling reason lost detail %q, got %q", want, r.Reason)
+		}
+	}
+}
+
+func TestNoHealthyVerdictAboveCeiling(t *testing.T) {
+	// The invariant, swept rather than spot-checked.
+	for v := 0; v <= 100; v++ {
+		r := Score(Evidence{Rule: "r", Liveness: "active", Volume: v, BaselineVolume: 100,
+			FieldPopulate: fp(1.0), BaselineFieldPopulate: 1.0})
+		if r.Verdict == VHealthy && r.DecayScore > MaxHealthyDecay {
+			t.Fatalf("volume %d: HEALTHY with decay %.2f above ceiling %.2f", v, r.DecayScore, MaxHealthyDecay)
+		}
+	}
 }

@@ -1,10 +1,10 @@
 name: Go
 
 on:
+  # Every branch, not just main — the gates used to run only once a PR existed,
+  # so work on a feature branch was unverified until it was already proposed.
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   build:
@@ -21,4 +21,47 @@ jobs:
       - name: Build
         run: go build ./cmd/decay
       - name: Test
-        run: go test ./... -v -count=1
+        run: go test ./... -v -count=1 -race
+      - name: No third-party dependencies
+        # The zero-dependency rule is a hard constraint, not a preference.
+        # Enforce it rather than trusting review to catch a stray require.
+        run: |
+          if grep -q '^require' go.mod || test -f go.sum; then
+            echo "::error::a third-party dependency was added — detection-decay is stdlib-only"
+            exit 1
+          fi
+      - name: Demo dashboard is current
+        # demo/dashboard.html is a committed artifact; a renderer change that
+        # forgets to regenerate it ships docs that contradict the code.
+        run: |
+          go run ./cmd/decay score --evidence evidence.json --format html --out /tmp/dashboard.html
+          diff -u demo/dashboard.html /tmp/dashboard.html || {
+            echo "::error::demo/dashboard.html is stale — regenerate it"
+            exit 1
+          }
+
+  sigma:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML
+        # Only the Sigma converter needs this. The decay binary stays stdlib-only;
+        # that is why the YAML never reaches it.
+        run: pip install pyyaml
+      - name: Converter tests
+        run: python3 scripts/sigma_to_rules_test.py
+      - name: Converter runs against real Sigma rules
+        run: |
+          python3 scripts/sigma-to-rules.py --map scripts/fieldmap-wazuh.json \
+            --out /tmp/rules.json testdata/sigma
+          python3 -c "
+          import json,sys
+          d=json.load(open('/tmp/rules.json'))
+          assert d['rules'], 'converter produced no rules'
+          w=[r for r in d['rules'] if r['product']=='windows']
+          assert w and w[0]['fields']==['data.win.eventdata.image'], w
+          print(f\"ok: {len(d['rules'])} rules\")
+          "

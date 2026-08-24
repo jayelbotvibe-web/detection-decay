@@ -1,0 +1,27 @@
+title: Suspicious Shell Reconnaissance Command
+id: 8f2e1c40-1a2b-4c3d-9e5f-000000000001
+status: experimental
+description: Detects id/whoami reconnaissance spawned via a shell, as emitted by T1059.004 atomics.
+references:
+  - https://attack.mitre.org/techniques/T1059/004/
+author: purple-loop
+date: 2026/07/04
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection:
+    Image|endswith:
+      - '/id'
+      - '/whoami'
+  parent_selection:
+    ParentImage|endswith:
+      - '/sh'
+      - '/bash'
+  condition: selection and parent_selection
+falsepositives:
+  - Legitimate administrative scripts running id/whoami
+level: low
+tags:
+  - attack.execution
+  - attack.t1059.004

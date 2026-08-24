@@ -298,9 +298,9 @@ func renderText(evidencePath string, results []score.Result) string {
 	}
 
 	// Table
-	sb.WriteString("┌──────────────────────────────────────┬────────┬────────┬─────────┬───────┬────────────────────┐\n")
-	sb.WriteString("│ RULE / STATE                         │ LIVE   │ VOLUME │ FIELD   │ DECAY │ VERDICT            │\n")
-	sb.WriteString("├──────────────────────────────────────┼────────┼────────┼─────────┼───────┼────────────────────┤\n")
+	sb.WriteString("┌──────────────────────────────────────┬────────┬────────┬───────────┬───────┬────────────────────┐\n")
+	sb.WriteString("│ RULE / STATE                         │ LIVE   │ VOLUME │ FIELD     │ DECAY │ VERDICT            │\n")
+	sb.WriteString("├──────────────────────────────────────┼────────┼────────┼───────────┼───────┼────────────────────┤\n")
 
 	for _, r := range results {
 		name := fmt.Sprintf("%s / %s", r.Rule, r.State)
@@ -324,7 +324,7 @@ func renderText(evidencePath string, results []score.Result) string {
 		}
 
 		fieldStr, fbadge := fieldDisplay(r)
-		fieldCell := colour(fmt.Sprintf("%-7s", fieldStr), fbadge)
+		fieldCell := colour(fmt.Sprintf("%-9s", fieldStr), fbadge)
 
 		decay := colour(fmt.Sprintf("%-5.2f", r.DecayScore), verdictColor(r.Verdict))
 		verdict := colour(fmt.Sprintf("%-18s", r.Verdict), verdictColor(r.Verdict))
@@ -333,7 +333,7 @@ func renderText(evidencePath string, results []score.Result) string {
 			namePad, live, vol, fieldCell, decay, verdict))
 	}
 
-	sb.WriteString("└──────────────────────────────────────┴────────┴────────┴─────────┴───────┴────────────────────┘\n\n")
+	sb.WriteString("└──────────────────────────────────────┴────────┴────────┴───────────┴───────┴────────────────────┘\n\n")
 
 	// Reason codes
 	sb.WriteString("\033[1mReason codes\033[0m\n")

@@ -355,6 +355,9 @@ func TestTableRowsAlign(t *testing.T) {
 		{Rule: "gone.yml", State: "agent-gone", Liveness: "disconnected", Volume: 0, BaselineVolume: 64, FieldPopulate: nil, BaselineFieldPopulate: 1.0},
 		{Rule: "drift.yml", State: "field-drift", Liveness: "active", Volume: 234, BaselineVolume: 64, FieldPopulate: fpv(0.0), BaselineFieldPopulate: 1.0},
 		{Rule: "an_extremely_long_sigma_rule_name_that_overflows.yml", State: "drift", Liveness: "active", Volume: 10, BaselineVolume: 64, FieldPopulate: fpv(0.05), BaselineFieldPopulate: 1.0},
+		// The widest FIELD cell the format can produce: "100%→100%", 9 runes.
+		{Rule: "widest.yml", State: "partial", Liveness: "active", Volume: 64, BaselineVolume: 64, FieldPopulate: fpv(0.5), BaselineFieldPopulate: 1.0},
+		{Rule: "widest2.yml", State: "full", Liveness: "active", Volume: 40, BaselineVolume: 64, FieldPopulate: fpv(1.0), BaselineFieldPopulate: 1.0},
 		{Rule: "probe.yml", State: "indexer-down", Liveness: "active", Volume: 0, BaselineVolume: 64, FieldPopulate: nil, BaselineFieldPopulate: 1.0, ProbeError: "connection refused"},
 	})
 

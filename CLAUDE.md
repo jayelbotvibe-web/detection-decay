@@ -3,7 +3,10 @@
 A CLI scorer for **silent detection failure** in SIEM pipelines. It reads a JSON evidence
 file (event volume, agent liveness, field-populate rate, plus healthy baselines) and
 computes `DecayScore = 1 - P(source_ok) * P(field_ok|source_ok) * P(behavior)`, assigning
-each rule/state pair one of five verdicts.
+each rule/state pair one of six verdicts plus a confidence label.
+
+It also records runs, derives baselines from that history, and serves a read-only dashboard
+over them.
 
 Targets two failure modes volume-only monitors miss: a telemetry source dying while the
 agent still reports Active, and a critical field going null at the index while events keep
@@ -13,25 +16,39 @@ flowing.
 
 ```bash
 go build ./cmd/decay                                   # build
-go test ./... -v -count=1                              # test
-./decay score --evidence evidence.json                 # run
+go test ./... -v -count=1 -race                        # test
+python3 scripts/sigma_to_rules_test.py                 # test the Sigma converter
+
+./decay score --evidence evidence.json
+./decay score --evidence evidence.json --format json | jq .summary
 ./decay score --evidence evidence.json --format html --out demo/dashboard.html
-go install github.com/jayelbotvibe-web/detection-decay/cmd/decay@latest
+./decay score --evidence e.json --history ./hist --fail-on dead   # exits 3 on decay
+./decay calibrate --history ./hist --out baselines.json
+./decay serve --history ./hist                         # http://127.0.0.1:8788
 ```
 
-Format/vet gates exist **only in CI** (`.github/workflows/go.yml`) — there is no Makefile
-and no lint config file:
+There is no Makefile and no lint config. The gates are gofmt and vet, run in CI and
+worth running locally:
 
 ```bash
 test -z "$(gofmt -l ./cmd ./internal)"
 go vet ./...
 ```
 
+**Running tests here:** `/tmp` is mounted noexec in some sandboxes, which makes `go test`
+fail with `fork/exec ... permission denied`. Set `GOTMPDIR` somewhere executable.
+
 ## Stack
 
 Go **1.22** (`go.mod`). **Zero third-party dependencies** — no `require` block, no
-`go.sum`. Stdlib only (`encoding/json`, `flag`, `html`, `sort`). Keep it that way; the
-absence of dependencies is a feature of this tool.
+`go.sum`. Stdlib only (`encoding/json`, `flag`, `html`, `sort`, `net/http`, `embed`,
+`crypto/sha256`).
+
+This is a **hard constraint, enforced by CI**: the build fails if a `require` block or a
+`go.sum` ever appears. It is what pushes run history onto plain JSON files rather than
+SQLite, and Sigma parsing into a conversion script rather than a YAML library in the binary.
+`scripts/sigma-to-rules.py` needs PyYAML, but it is a developer tool and never runs as part
+of the binary.
 
 ## Architecture
 
@@ -117,27 +134,59 @@ confirmed to fail without it:
 
 ## State
 
-Working MVP, actively developed. Zero TODO/FIXME markers.
+**v0.3.0**, released and tagged. `main` is current; everything below is merged. Zero
+TODO/FIXME markers.
 
-**CI only triggers on `main`** (`.github/workflows/go.yml`), so pushes to a feature branch
-run nothing until a PR is opened. Run the gates locally.
+CI (`.github/workflows/go.yml`) runs on **every branch**, two jobs: `build` (gofmt, vet,
+build, `go test -race`, a zero-dependency gate, and a check that `demo/dashboard.html` is
+not stale) and `sigma` (the Python converter tests against fixtures in `testdata/sigma/`).
 
-**Note for running tests here:** `/tmp` is mounted noexec in some sandboxes, which makes
-`go test` fail with `fork/exec ... permission denied`. Set `GOTMPDIR` somewhere executable.
+**`demo/dashboard.html` and `screenshots/*.webp` are generated artifacts.** A renderer or
+version change must regenerate them or CI fails on the dashboard and the README starts
+contradicting the tool.
 
-**Note the branch state.** Default branch is `main`. Work has been stacking on unpushed
-branches: `fix/verdict-thresholds` (banded verdicts, PR #3) and `feat/trustworthy-verdicts`
-on top of it. Check where you are before committing.
+```bash
+# dashboard.html — CI fails if this is stale
+./decay score --evidence evidence.json --format html --out demo/dashboard.html
 
-`feat/live-mode` (PR #1) is **not a merge candidate** — it branched off the *initial* commit,
-so merging it would delete CI, `SECURITY.md` and `scripts/collect-opensearch.sh`, revert the
-scoring model to the v0.1.x binary steps, add a `gopkg.in/yaml.v3` dependency, and hardcode
-`InsecureSkipVerify: true` against what `SECURITY.md` claims. Its good ideas (live probing,
-a probe-error verdict) are being reimplemented on `main` instead.
+# screenshots/decay-cli.webp
+./decay score --evidence evidence.json | python3 scripts/ansi-to-html.py > cli.html
+wkhtmltoimage --transparent --width 1900 --format png cli.html raw.png
+convert raw.png -background '#0d1117' -alpha remove -trim +repage \
+        -bordercolor '#0d1117' -border 32 -resize 50% -define webp:lossless=true \
+        screenshots/decay-cli.webp
+```
 
-**The zero-dependency rule is a hard constraint**, not a preference. It is what pushes
-history onto plain JSON run files rather than SQLite, and Sigma ingestion into a conversion
-script rather than a YAML parser in the binary.
+Three gotchas, each of which cost a rebuild:
 
-Roadmap items still unfinished: P(behavior) gate, live mode, multi-rule scope, run history,
-alerting, calibration loop.
+- **Render at 2x and downsample.** Box-drawing characters do not tile at small font sizes;
+  the table's horizontal rules come out dashed.
+- **`wkhtmltoimage` cannot render `decay serve`.** Its WebKit predates `fetch()` and the
+  page's CSS — it captures "loading…" on a white background. Use Firefox for anything with
+  JavaScript.
+- **Firefox is a snap here, and snaps cannot write into hidden directories.** Screenshotting
+  to any path under `~/.cache` fails with the misleading "Firefox is already running".
+  Use a non-hidden output directory.
+
+`decay serve` needs one more step, because Firefox's `--screenshot` fires on `load` and the
+page's second `fetch` has not resolved by then: capture `/api/history` and
+`/api/runs/latest` from a live server, then stub `window.fetch` in a copy of the served
+page. Only the transport is replaced — the page's own rendering runs unmodified.
+
+`feat/live-mode` (PR #1) was **closed, not merged** — it branched off the *initial* commit,
+so merging it would have deleted CI, `SECURITY.md` and `scripts/collect-opensearch.sh`,
+reverted the scoring model to v0.1.x binary steps, added `gopkg.in/yaml.v3`, and hardcoded
+`InsecureSkipVerify: true`. Its two good ideas landed independently: `PROBE_ERROR` shipped
+in v0.3.0, and live collection is still to build.
+
+### Not done yet
+
+- **Live collection** — no built-in poller; `scripts/collect-opensearch.sh` is the reference
+  collector and it still measures one rule per invocation. Nothing consumes `rules.json`.
+- **Positive control / canary** — the scorer trusts that a measured zero is a real zero.
+  `probe_error` is the manual escape hatch.
+- **P(behavior)** — held at 1.0 and says so in every explanation.
+- **Seasonality** — `calibrate` is a flat median over a window, with no time-of-day or
+  day-of-week notion.
+- **Alerting** — no notifier. The confidence axis exists so routing can key on
+  (verdict, confidence) when it is built.

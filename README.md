@@ -256,10 +256,14 @@ a stale baseline makes a verdict less certain, it does not make decay worse.
 ./decay serve --history ./decay-history        # http://127.0.0.1:8788
 ```
 
+![decay serve dashboard](screenshots/decay-serve.webp)
+
 A single self-contained page, embedded in the binary, over a **read-only GET-only** JSON
 API (`/api/health`, `/api/history`, `/api/runs/latest`, `/api/runs/{id}`). It shows the decay
-trend, the latest run, and — clicking any row — that row's full gate breakdown, the same
-explanation the CLI prints.
+trend, the latest run, what changed since the previous one, and — clicking any row — that
+row's full gate breakdown, the same explanation the CLI prints. The screenshot above has the
+worst row expanded: every gate names the measurement behind it, and the last line restates
+the arithmetic so it can be checked by hand.
 
 It **binds to loopback only** unless you pass `--allow-remote`. There is no authentication,
 and the page is a map of exactly where an estate's detection is blind; exposing that is a
